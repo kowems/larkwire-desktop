@@ -12,7 +12,7 @@ CLI 与桌面共用同一份核心）托管起来，配对状态、桥存活、�
 
 | 仓库 | 内容 | 分发 |
 |---|---|---|
-| [kowems/larkwire](https://github.com/kowems/larkwire) | 桥 + 协议（CLI 核心 `larkwire` / `@larkwire/protocol`） | npm |
+| [kowems/larkwire-core](https://github.com/kowems/larkwire-core) | 桥 + 协议（CLI 核心 `larkwire` / `@larkwire/protocol`） | npm |
 | [kowems/larkwire-relay](https://github.com/kowems/larkwire-relay) | 哑中继（WSS 转发，对内容零可见） | npm + Release 单文件 bundle |
 | [kowems/larkwire-desktop](https://github.com/kowems/larkwire-desktop) | **本仓**·macOS 桌面端（Electron） | Release 公证 dmg |
 
