@@ -6,7 +6,7 @@
 一个常驻菜单栏的 Electron 壳——扫码配对后，把本机桥（[`larkwire`](https://www.npmjs.com/package/larkwire) 包，
 CLI 与桌面共用同一份核心）托管起来，配对状态、桥存活、开机自启、权限引导都在这层。
 
-> 手机端 App（iOS / Android）闭源，不在本仓。
+> 手机端 App（iOS / Android）闭源，不在本仓。下载：iOS（TestFlight 审核中）/ Android（应用市场即将上架），见 <https://larkwire.kowems.site#download>。
 
 ## 三个源码仓
 
