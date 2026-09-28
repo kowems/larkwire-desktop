@@ -1,0 +1,132 @@
+/* 灵鹊桌面 renderer 样式（vanilla，CSP style-src 'self'——禁 inline style） */
+:root {
+  --bg: #1c1f26;
+  --panel: #262a33;
+  --fg: #e8eaf0;
+  --dim: #9aa1b0;
+  --accent: #4c8dff;
+  --ok: #3ecf8e;
+  --danger: #ff6b6b;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.55 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.hidden { display: none !important; }
+.mono { font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
+.dim { color: var(--dim); }
+.view { padding: 24px 28px; max-width: 860px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 8px 0 2px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.sub { color: var(--dim); margin: 0 0 18px; }
+
+/* ---- 配对视图 ---- */
+#qr-wrap { text-align: center; margin: 10px 0; }
+#qr {
+  width: 260px; height: 260px;
+  background: #fff; border-radius: 12px; padding: 10px;
+  image-rendering: pixelated;
+}
+#qr-waiting { color: var(--dim); }
+#pair-url { text-align: center; margin: 6px 0 14px; }
+.fp-row { text-align: center; }
+.fp-row .mono { color: var(--dim); }
+
+.panel {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 14px 0;
+}
+.panel.error { border-left: 3px solid var(--danger); }
+.panel.notice { border-left: 3px solid var(--accent); margin-top: 0; }
+.fp-table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; }
+.fp-table td { padding: 6px 8px; border-top: 1px solid #333947; vertical-align: top; }
+.fp-table td:first-child { white-space: nowrap; color: var(--dim); width: 110px; }
+
+.btn-row { display: flex; gap: 10px; margin-top: 8px; }
+.btn {
+  border: 0; border-radius: 8px; padding: 8px 16px;
+  font-size: 14px; cursor: pointer; color: var(--fg); background: #333947;
+}
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+.btn:active { opacity: 0.8; }
+
+.log {
+  background: #14161b;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: 11px/1.5 "SF Mono", Menlo, monospace;
+  color: var(--dim);
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 12px 0 0;
+}
+
+/* ---- 主视图 ---- */
+#statusbar {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #666; flex: none;
+}
+.dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.sep { flex: 1; }
+.badge {
+  background: var(--danger); color: #fff;
+  border-radius: 10px; padding: 1px 8px; font-size: 12px;
+}
+#loginitem-label { color: var(--dim); user-select: none; }
+#loginitem-label input { vertical-align: -2px; }
+
+#sessions-pane h2 { margin-bottom: 8px; }
+#sessions-list { list-style: none; margin: 0; padding: 0; }
+#sessions-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+.s-left { display: flex; flex-direction: column; min-width: 0; }
+.s-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-meta { flex: none; font-size: 12px; }
+.s-actions { flex: none; display: flex; align-items: center; gap: 8px; }
+
+/* WP5 占用徽章——四态四色（与手机横幅同源 occupancy） */
+.s-occ {
+  border-radius: 10px; padding: 1px 9px; font-size: 12px; white-space: nowrap;
+  background: #333947; color: var(--dim);
+}
+.s-occ.occ-desktop { background: rgba(255, 107, 107, 0.16); color: var(--danger); }
+.s-occ.occ-terminal { background: rgba(76, 141, 255, 0.16); color: var(--accent); }
+.s-occ.occ-phone { background: rgba(62, 207, 142, 0.16); color: var(--ok); }
+
+/* 会话行小按钮 */
+.s-btn {
+  border: 0; border-radius: 7px; padding: 4px 10px;
+  font-size: 12px; cursor: pointer; color: var(--fg); background: #3a4150;
+  white-space: nowrap;
+}
+.s-btn.primary { background: var(--accent); color: #fff; }
+.s-btn.danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+.s-btn:active { opacity: 0.8; }
+#sessions-empty { padding: 18px 0; text-align: center; }
+
+#log-details { margin-top: 16px; }
+#log-details summary { color: var(--dim); cursor: pointer; user-select: none; }
+
+#preload-fail { padding: 40px; text-align: center; color: var(--danger); }

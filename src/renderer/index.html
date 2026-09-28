@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP：无框架 vanilla 页，全自源；二维码走 data: -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>灵鹊 Larkwire</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="preload-fail" class="hidden">
+    <p>⚠ preload 未加载（window.larkwire 缺失）——请用 <code>pnpm dev</code> 或打包后的 App 启动。</p>
+  </div>
+
+  <!-- ===== 配对视图 ===== -->
+  <section id="view-pair" class="view hidden">
+    <h1>灵鹊 Larkwire</h1>
+    <p class="sub">微信扫一扫二维码，把手机连到这台电脑</p>
+
+    <div id="pair-stage">
+      <div id="qr-wrap">
+        <img id="qr" class="hidden" alt="配对二维码" />
+        <p id="qr-waiting">正在连接中继，生成二维码…</p>
+      </div>
+      <p id="pair-url" class="mono dim"></p>
+      <p class="fp-row">桥指纹 <span id="bridge-fp" class="mono"></span></p>
+    </div>
+
+    <div id="fp-panel" class="panel hidden">
+      <h2>核对指纹</h2>
+      <p>请对照手机屏幕上显示的指纹，与下面两个指纹是否一致：</p>
+      <table class="fp-table">
+        <tr><td>桥（本机）</td><td id="fp-bridge" class="mono"></td></tr>
+        <tr><td>手机 <span id="fp-phone-name"></span></td><td id="fp-phone" class="mono"></td></tr>
+      </table>
+      <div class="btn-row">
+        <button id="fp-yes" class="btn primary">一致，完成配对</button>
+        <button id="fp-no" class="btn danger">不一致</button>
+      </div>
+    </div>
+
+    <div id="pair-error" class="panel error hidden">
+      <h2>配对失败</h2>
+      <p id="pair-error-msg"></p>
+      <div class="btn-row">
+        <button id="pair-retry" class="btn primary">重试</button>
+      </div>
+    </div>
+
+    <pre id="pair-log" class="log"></pre>
+  </section>
+
+  <!-- ===== 主视图 ===== -->
+  <section id="view-main" class="view hidden">
+    <header id="statusbar">
+      <span id="conn-dot" class="dot"></span>
+      <span id="conn-text">中继连接中…</span>
+      <span class="sep"></span>
+      <span id="phones-text">— 台手机</span>
+      <span id="perm-badge" class="badge hidden"></span>
+      <span class="sep"></span>
+      <label id="loginitem-label"><input type="checkbox" id="loginitem-cb" /> 开机自启</label>
+    </header>
+
+    <div id="notice-banner" class="panel notice hidden">
+      <span id="notice-msg"></span>
+    </div>
+
+    <div id="fatal-banner" class="panel error hidden">
+      <strong>⚠ 桥启动失败：</strong><span id="fatal-msg"></span>
+    </div>
+
+    <main id="sessions-pane">
+      <h2>会话 <span id="sessions-count" class="dim"></span></h2>
+      <ul id="sessions-list"></ul>
+      <p id="sessions-empty" class="dim">暂无会话——在电脑上启动 Claude Code / Codex 后会出现在这里。</p>
+    </main>
+
+    <!-- 默认展开（2026-09-24 Eric 拍板）：桌面端无推送，日志是感知桥状态的唯一直接通道，
+         折叠态实战两次找不到（T2 抢夺诊断/T4a 验证）=需求侧证据 -->
+    <details id="log-details" open>
+      <summary>桥日志</summary>
+      <pre id="main-log" class="log"></pre>
+    </details>
+  </section>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

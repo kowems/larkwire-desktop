@@ -1,0 +1,28 @@
+# 灵鹊桌面打包配置（WP2 骨架 / WP4 公证在此追加）
+# icon 约定：buildResources(=assets)/icon.png 自动作为 app/dmg 图标（electron-builder 自动转 icns）
+appId: site.kowems.larkwire.desktop
+productName: 灵鹊
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**
+  - package.json
+asar: true
+npmRebuild: false
+mac:
+  category: public.app-category.utilities
+  target:
+    - dmg
+  # 公证形态（2026-09-24 凌晨解开）：证书=钥匙串实证的 Developer ID Application（Eric 已在 Xcode 建好）。
+  # 前置=notarytool store-credentials "larkwire-notarize"（NOTARIZE.md 第三步，Eric 一行命令）；
+  # 跑 dist 必须带 APPLE_KEYCHAIN_PROFILE=larkwire-notarize。
+  # 值不带 "Developer ID Application:" 前缀（electron-builder 自动匹配证书，带前缀反而报错）；
+  # 含冒号类字符的值在 yml 里必须带引号（2026-09-24 踩坑定案）。
+  identity: "chuankai ju (45TYW2FJ26)"
+  notarize: true
+dmg:
+  title: 灵鹊 Larkwire
+  window:
+    width: 540
+    height: 380
