@@ -32,4 +32,6 @@ contextBridge.exposeInMainWorld("larkwire", {
   releaseSession: (sessionId: string) => ipcRenderer.invoke("session:release", sessionId),
   openTerminal: (sessionId: string) => ipcRenderer.invoke("session:open-terminal", sessionId),
   killOpen: (sessionId: string) => ipcRenderer.invoke("session:kill-open", sessionId),
+  // 系统守护（#72）
+  setGuardEnabled: (on: boolean) => ipcRenderer.invoke("guard:set-enabled", on),
 });

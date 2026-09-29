@@ -43,6 +43,14 @@ function main(api) {
     sessionsCount: $("sessions-count"),
     sessionsEmpty: $("sessions-empty"),
     mainLog: $("main-log"),
+    // guard
+    guardBadge: $("guard-state-badge"),
+    guardEnabledCb: $("guard-enabled-cb"),
+    guardMeta: $("guard-meta"),
+    guardSuspectsWrap: $("guard-suspects-wrap"),
+    guardSuspects: $("guard-suspects"),
+    guardEvents: $("guard-events"),
+    guardEventsEmpty: $("guard-events-empty"),
   };
 
   const LOG_CAP = 500;
@@ -124,6 +132,50 @@ function main(api) {
 
       li.append(left, actions);
       els.sessionsList.appendChild(li);
+    }
+
+    renderGuard(st.guard);
+  }
+
+  /** 系统守护面板（#72）：开关 / 口径 / 可疑进程 / 处置记录 */
+  function renderGuard(g) {
+    if (!g) {
+      els.guardBadge.textContent = "";
+      return;
+    }
+    if (els.guardEnabledCb.checked !== g.enabled) els.guardEnabledCb.checked = g.enabled;
+
+    if (g.enabled) {
+      els.guardBadge.textContent = "看护中";
+      els.guardBadge.className = "badge badge-ok";
+    } else {
+      els.guardBadge.textContent = "已停用";
+      els.guardBadge.className = "badge badge-dim";
+    }
+    els.guardMeta.textContent =
+      `看护 ${g.watching} 个进程 · 阈值 ${g.threshold}% · 持续 ${Math.round(g.sustainSecs / 60)} 分钟`;
+
+    els.guardSuspects.textContent = "";
+    show(els.guardSuspectsWrap, g.suspects.length > 0);
+    for (const x of g.suspects) {
+      const li = document.createElement("li");
+      li.dataset.testid = "guard-suspect";
+      li.textContent = `PID ${x.pid} · CPU ${x.cpu}% · 已持续约 ${Math.round(x.sustainedSecs)}s`;
+      els.guardSuspects.appendChild(li);
+    }
+
+    els.guardEvents.textContent = "";
+    show(els.guardEventsEmpty, g.events.length === 0);
+    for (const ev of g.events) {
+      const li = document.createElement("li");
+      li.dataset.testid = "guard-event";
+      const t = document.createElement("span");
+      t.className = "guard-ts mono dim";
+      t.textContent = ev.ts;
+      const txt = document.createElement("span");
+      txt.textContent = ev.text;
+      li.append(t, txt);
+      els.guardEvents.appendChild(li);
     }
   }
 
@@ -224,6 +276,10 @@ function main(api) {
   });
   els.loginitemCb.addEventListener("change", () => {
     api.setLoginItem(els.loginitemCb.checked);
+  });
+  els.guardEnabledCb.addEventListener("change", () => {
+    // 主进程 setEnabled 后会回推 state，renderGuard 同步最终态
+    void api.setGuardEnabled(els.guardEnabledCb.checked);
   });
 
   // 首帧：拉一次全量状态（事件可能先于 JS 就绪到达）

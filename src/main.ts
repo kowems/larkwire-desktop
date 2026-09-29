@@ -11,7 +11,7 @@
  * WP3：首启接管旧 launchd 形态（larkwire install 装的常驻桥）——bootout 注销 → 退役 plist →
  * 等 pidfile 释放 → 起桥；回退路径保留（larkwire install 随时可重装，pidfile 互斥防双跑）。
  */
-import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from "electron";
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage } from "electron";
 import { execFile } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
@@ -26,8 +26,9 @@ import {
   startBridge,
   type BridgeHandle,
   type Occupancy,
-} from "larkwire";
+} from "@larkwire/core";
 import QRCode from "qrcode";
+import { ProcessGuard, type GuardSnapshot } from "./guard.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RENDERER = join(here, "renderer", "index.html");
@@ -46,6 +47,8 @@ type View = "pair" | "main";
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let bridge: BridgeHandle | null = null;
+/** 系统守护（#72）：独立于桥和配对流，app ready 即看护 */
+let guard: ProcessGuard | null = null;
 let view: View = "main";
 let quitting = false;
 let lastFatal: string | null = null;
@@ -102,6 +105,8 @@ interface StatePayload {
       occupancy: Occupancy;
     }[];
   } | null;
+  /** 系统守护状态（任何视图都在——守护独立于桥） */
+  guard: GuardSnapshot | null;
 }
 
 function statePayload(): StatePayload {
@@ -127,6 +132,7 @@ function statePayload(): StatePayload {
         occupancy: s.occupancy,
       })),
     },
+    guard: guard ? guard.snapshot() : null,
   };
 }
 
@@ -376,6 +382,10 @@ ipcMain.on("loginitem:set", (_e, open: unknown) => {
   app.setLoginItemSettings({ openAtLogin: open === true });
   pushState();
 });
+ipcMain.handle("guard:set-enabled", (_e, on: unknown) => {
+  guard?.setEnabled(on === true);
+  return guard?.snapshot().enabled ?? false;
+});
 
 // ---------- app 生命周期 ----------
 
@@ -391,6 +401,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", (e) => {
     if (quitting) return;
     quitting = true;
+    guard?.stop(); // 同步清 interval，不挡退出
     if (!bridge) return; // 无桥可停，放行退出
     e.preventDefault();
     setTimeout(() => app.exit(0), 5000).unref(); // stop 卡死兜底
@@ -404,6 +415,18 @@ if (!app.requestSingleInstanceLock()) {
     // 自启默认开仅限打包形态：dev 的 electron 二进制指向 repo（~/Documents TCC 禁区），
     // 注册登录项会在登录时拉一个必死进程——开发态不动登录项（托盘勾选仍可手动开）
     if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });
+    // 系统守护先于窗口和桥就位——配对视图/桥没起时系统照护，状态段立即可用
+    guard = new ProcessGuard({
+      onState: () => pushState(),
+      notify: (title, body) => {
+        try {
+          if (Notification.isSupported()) new Notification({ title, body }).show();
+        } catch {
+          /* 通知不可用=面板事件环兜底 */
+        }
+      },
+    });
+    guard.activate();
     createTray();
     createWindow();
     const cfg = loadConfig();

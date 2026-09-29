@@ -78,6 +78,27 @@
       <p id="sessions-empty" class="dim">暂无会话——在电脑上启动 Claude Code / Codex 后会出现在这里。</p>
     </main>
 
+    <!-- 系统守护（#72，2026-09-28 拍板并入 App）：CPU 失控进程兜底 -->
+    <details id="guard-details" class="guard" open>
+      <summary>
+        系统守护
+        <span id="guard-state-badge" class="badge"></span>
+      </summary>
+      <div class="guard-body">
+        <div class="guard-head">
+          <label><input type="checkbox" id="guard-enabled-cb" /> 启用守护</label>
+          <span id="guard-meta" class="dim"></span>
+        </div>
+        <div id="guard-suspects-wrap" class="hidden">
+          <h3>可疑进程</h3>
+          <ul id="guard-suspects"></ul>
+        </div>
+        <h3>近期处置</h3>
+        <ul id="guard-events"></ul>
+        <p id="guard-events-empty" class="dim">暂无处置</p>
+      </div>
+    </details>
+
     <!-- 默认展开（2026-09-24 Eric 拍板）：桌面端无推送，日志是感知桥状态的唯一直接通道，
          折叠态实战两次找不到（T2 抢夺诊断/T4a 验证）=需求侧证据 -->
     <details id="log-details" open>

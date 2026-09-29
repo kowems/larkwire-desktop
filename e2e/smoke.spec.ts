@@ -10,7 +10,7 @@
  * 无配对手机、零持久状态，等同任意新设备首连，无害）；LARKWIRE_AWAY_IDLE_SEC=99999 自噬隔离。
  */
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import { execSync } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,7 +23,7 @@ const req = createRequire(join(pkgDir, "package.json"));
 /** electron 的 CJS index.js 导出二进制路径字符串（读 path.txt） */
 const electronBin = req("electron") as string;
 
-async function launchApp(home: string): Promise<ElectronApplication> {
+async function launchApp(home: string, extraEnv: Record<string, string> = {}): Promise<ElectronApplication> {
   // Cursor/VSCode 宿主给 Claude/终端 shell 注入 ELECTRON_RUN_AS_NODE=1——原样透传会让
   // electron 被当纯 node 跑（Process failed to launch，2026-09-24 冒烟 4/4 全挂钓出），必须剔除
   const { ELECTRON_RUN_AS_NODE: _dropped, ...hostEnv } = process.env;
@@ -39,6 +39,7 @@ async function launchApp(home: string): Promise<ElectronApplication> {
       LARKWIRE_AWAY_IDLE_SEC: "99999",
       // bootout 打在真 gui 域上（HOME 隔离无效）——测试用不存在的 Label 变体防误杀真常驻桥
       LARKWIRE_LAUNCHD_LABEL: "site.kowems.larkwire.bridge-e2e",
+      ...extraEnv,
     },
   });
 }
@@ -186,6 +187,69 @@ test("S6 合成转录、无持有者 → 空闲徽章 + ▶ 终端接管钮存�
     await expect(row.locator("[data-testid=btn-terminal]")).toBeVisible();
   } finally {
     await app.close();
+  }
+});
+
+test("S7 系统守护面板：默认启用、口径文案在", async () => {
+  const app = await launchApp(makeSyntheticHome());
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator("#guard-details")).toBeVisible();
+    await expect(page.locator("#guard-enabled-cb")).toBeChecked();
+    await expect(page.locator("#guard-state-badge")).toHaveText("看护中");
+    // 生产口径只读展示：90% / 5 分钟
+    await expect(page.locator("#guard-meta")).toHaveText(/阈值 90%/);
+    await expect(page.locator("#guard-meta")).toHaveText(/持续 5 分钟/);
+    await expect(page.locator("#guard-events-empty")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * S8 真实忙进程全链路：造一个唯一名的 yes 二进制（Mach-O 复制，ps comm 带该名），
+ * 守护测试口短口径（1s 轮询 / 2s 触发）→ 面板先出现可疑进程行 → 真被 SIGTERM 消失 → 处置记录落面板。
+ */
+test("S8 忙进程被守护发现并结束：可疑行→进程消失→处置记录", async () => {
+  const home = makeSyntheticHome();
+  const busyDir = mkdtempSync(join(tmpdir(), "larkwire-guard-busy-"));
+  // ps 的 comm 取 argv[0]——`exec -a` 伪造唯一名（shebang 脚本直跑只会显示 /bin/bash；
+  // 复制签名二进制换路径会被 AMFI 判 Killed: 9）。busyName 用全路径，匹配子串 guard-busy-e2e
+  const busyName = join(busyDir, "guard-busy-e2e");
+  const busy: ChildProcess = spawn(
+    "/bin/bash",
+    ["-c", `exec -a '${busyName}' bash -c 'while true; do :; done'`],
+    { stdio: "ignore" },
+  );
+  const busyPid = busy.pid;
+  if (!busyPid) throw new Error("忙进程启动失败");
+
+  const electronApp = await launchApp(home, {
+    LARKWIRE_GUARD_MATCH: "guard-busy-e2e",
+    LARKWIRE_GUARD_INTERVAL_SEC: "1",
+    LARKWIRE_GUARD_SUSTAIN_SEC: "2",
+  });
+  try {
+    const page = await electronApp.firstWindow();
+    // 第一轮采样后即可疑行出现（行内含该 PID）
+    await expect(page.locator(`#guard-suspects li:has-text("PID ${busyPid}")`)).toBeVisible({ timeout: 15_000 });
+
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // 2 轮即触发 TERM——真机进程必须真的消失（不 mock）
+    await expect.poll(() => alive(busyPid), { timeout: 15_000 }).toBe(false);
+    await expect(page.locator(`#guard-events li:has-text("PID ${busyPid}")`)).toBeVisible({ timeout: 5_000 });
+    // 进程消失后可疑行随之清掉
+    await expect(page.locator(`#guard-suspects li:has-text("PID ${busyPid}")`)).toHaveCount(0);
+  } finally {
+    await electronApp.close();
+    if (!busy.killed) busy.kill("SIGKILL");
   }
 });
 

@@ -126,6 +126,29 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 .s-btn:active { opacity: 0.8; }
 #sessions-empty { padding: 18px 0; text-align: center; }
 
+/* ---- 系统守护 ---- */
+.badge-ok { background: rgba(62, 207, 142, 0.16); color: var(--ok); }
+.badge-dim { background: #333947; color: var(--dim); }
+
+#guard-details { margin-top: 16px; }
+#guard-details > summary { cursor: pointer; user-select: none; }
+#guard-details .badge { margin-left: 6px; }
+.guard-body {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 8px;
+}
+.guard-head {
+  display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap; margin-bottom: 4px;
+}
+.guard-head input { vertical-align: -2px; }
+.guard-body h3 { font-size: 13px; color: var(--dim); margin: 8px 0 4px; font-weight: 600; }
+#guard-suspects, #guard-events { list-style: none; margin: 0; padding: 0; }
+#guard-suspects li, #guard-events li { padding: 3px 0; }
+.guard-ts { margin-right: 8px; }
+
 #log-details { margin-top: 16px; }
 #log-details summary { color: var(--dim); cursor: pointer; user-select: none; }
 

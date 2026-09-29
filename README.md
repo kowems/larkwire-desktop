@@ -3,8 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 灵鹊 Larkwire 是「用手机远程照看、操控电脑端 AI Agent」的工具。本仓是 **macOS 桌面端**：
-一个常驻菜单栏的 Electron 壳——扫码配对后，把本机桥（[`larkwire`](https://www.npmjs.com/package/larkwire) 包，
-CLI 与桌面共用同一份核心）托管起来，配对状态、桥存活、开机自启、权限引导都在这层。
+一个常驻菜单栏的 Electron 壳——扫码配对后，把本机桥（[`@larkwire/core`](https://www.npmjs.com/package/@larkwire/core) 包，
+CLI 命令名仍为 `larkwire`，与桌面共用同一份核心）托管起来，配对状态、桥存活、开机自启、权限引导都在这层。
+
+v0.1.1 起**系统守护**也在此壳：看护 Cursor 扩展宿主，CPU 连续满载约 5 分钟即自动结束进程并通知（SIGTERM，绝不强杀），
+主窗「系统守护」面板可扳开关、查看可疑进程与近期处置。
 
 > 手机端 App（iOS / Android）闭源，不在本仓。下载：iOS（TestFlight 审核中）/ Android（应用市场即将上架），见 <https://larkwire.kowems.site#download>。
 
@@ -12,7 +15,7 @@ CLI 与桌面共用同一份核心）托管起来，配对状态、桥存活、�
 
 | 仓库 | 内容 | 分发 |
 |---|---|---|
-| [kowems/larkwire-core](https://github.com/kowems/larkwire-core) | 桥 + 协议（CLI 核心 `larkwire` / `@larkwire/protocol`） | npm |
+| [kowems/larkwire-core](https://github.com/kowems/larkwire-core) | 桥 + 协议（npm `@larkwire/core`，bin 名 `larkwire` / `@larkwire/protocol`） | npm |
 | [kowems/larkwire-relay](https://github.com/kowems/larkwire-relay) | 哑中继（WSS 转发，对内容零可见） | npm + Release 单文件 bundle |
 | [kowems/larkwire-desktop](https://github.com/kowems/larkwire-desktop) | **本仓**·macOS 桌面端（Electron） | Release 公证 dmg |
 
@@ -34,7 +37,7 @@ CLI 与桌面共用同一份核心）托管起来，配对状态、桥存活、�
 需 Node ≥ 22（桥核心用 `node:sqlite`）：
 
 ```bash
-npm install        # 从 npm 拉 larkwire@^0.1.0，不依赖 monorepo workspace
+npm install        # 从 npm 拉 @larkwire/core@^0.1.0，不依赖 monorepo workspace
 npm run build      # esbuild 出 dist/（main/preload/renderer）
 npm run dev        # 构建并启动 Electron
 ```
@@ -77,6 +80,6 @@ APPLE_KEYCHAIN_PROFILE=larkwire-notarize npm run dist
 
 ## 相关包
 
-- [`larkwire`](https://www.npmjs.com/package/larkwire) — 桥 CLI 与核心库
+- [`@larkwire/core`](https://www.npmjs.com/package/@larkwire/core) — 桥 CLI（命令名 `larkwire`）与核心库
 - [`@larkwire/protocol`](https://www.npmjs.com/package/@larkwire/protocol) — 信封/加密协议
 - [`@larkwire/relay`](https://www.npmjs.com/package/@larkwire/relay) — 哑中继
