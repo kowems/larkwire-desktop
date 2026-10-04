@@ -11,7 +11,7 @@
  */
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
 import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,7 +165,9 @@ test("S5 注册表活条目（pid=测试进程自身）→ 💻 徽章含 PID �
   const app = await launchApp(home);
   try {
     const page = await app.firstWindow();
-    const row = page.locator(`#sessions-list li:has(.s-occ.occ-desktop:has-text("PID ${process.pid}"))`);
+    // #77：组默认收起，先展开 wp5 项目组；行定位精确到 .group-items 内（避免连同组容器一起匹配）
+    await page.locator(".group-head:has-text('wp5')").click();
+    const row = page.locator(`.group-items li:has(.s-occ.occ-desktop:has-text("PID ${process.pid}"))`);
     await expect(row).toBeVisible();
     // 别窗占用→「关掉该窗口并接管」钮同在（真链路=杀进程，绝不进自动化点击）
     await expect(row.locator("[data-testid=btn-killopen]")).toBeVisible();
@@ -180,7 +182,9 @@ test("S6 合成转录、无持有者 → 空闲徽章 + ▶ 终端接管钮存�
   const app = await launchApp(home);
   try {
     const page = await app.firstWindow();
-    const row = page.locator(`#sessions-list li:has(.s-occ.occ-free)`);
+    // #77：先展开 wp5 组，再定位空闲行
+    await page.locator(".group-head:has-text('wp5')").click();
+    const row = page.locator(`.group-items li:has(.s-occ.occ-free)`);
     await expect(row).toBeVisible();
     await expect(row.locator(".s-occ")).toHaveText("空闲");
     // 按钮真链路=弹真 Terminal 跑 resume——只验存在与接线，点击列真机手动清单
@@ -194,6 +198,8 @@ test("S7 系统守护面板：默认启用、口径文案在", async () => {
   const app = await launchApp(makeSyntheticHome());
   try {
     const page = await app.firstWindow();
+    // #76：守护收进左栏导航，先切 tab
+    await page.locator("[data-testid=nav-guard]").click();
     await expect(page.locator("#guard-details")).toBeVisible();
     await expect(page.locator("#guard-enabled-cb")).toBeChecked();
     await expect(page.locator("#guard-state-badge")).toHaveText("看护中");
@@ -231,6 +237,8 @@ test("S8 忙进程被守护发现并结束：可疑行→进程消失→处置�
   });
   try {
     const page = await electronApp.firstWindow();
+    // #76：先切到守护 tab
+    await page.locator("[data-testid=nav-guard]").click();
     // 第一轮采样后即可疑行出现（行内含该 PID）
     await expect(page.locator(`#guard-suspects li:has-text("PID ${busyPid}")`)).toBeVisible({ timeout: 15_000 });
 
@@ -250,6 +258,153 @@ test("S8 忙进程被守护发现并结束：可疑行→进程消失→处置�
   } finally {
     await electronApp.close();
     if (!busy.killed) busy.kill("SIGKILL");
+  }
+});
+
+test("S9 主窗重配全链路：手机面板→停桥亮码→取消回主窗重启桥", async () => {
+  const app = await launchApp(makeSyntheticHome());
+  try {
+    const page = await app.firstWindow();
+    // #76：手机页收进左栏导航，先切 tab
+    await page.locator("[data-testid=nav-phones]").click();
+    await expect(page.locator("#phones-details")).toBeVisible();
+    await expect(page.locator("[data-testid=paired-phone]")).toContainText("冒烟假手机");
+    // 已有手机时底部按钮是追加入口「＋ 添加手机」
+    await expect(page.locator("[data-testid=pair-add]")).toHaveText("＋ 添加手机");
+
+    // 点「添加手机」有 confirm 弹窗——先挂自动接受
+    page.on("dialog", (d) => void d.accept());
+    await page.locator("[data-testid=pair-add]").click();
+    await expect(page.locator("#view-pair")).toBeVisible();
+    // 桥真停、配对连接真到生产中继：QR 图出来（=PairOfferAck 已回），非仅 waiting 文案
+    await expect(page.locator("#qr:not(.hidden)")).toBeVisible({ timeout: 20_000 });
+
+    // 取消 → startMainFlow 新桥连接 4000 踢掉配对连接，主窗恢复且无 fatal
+    await page.locator("[data-testid=pair-cancel]").click();
+    await expect(page.locator("#view-main")).toBeVisible();
+    await expect(page.locator("#fatal-banner")).toBeHidden();
+    // 取消后回默认会话 tab——手机页切回去仍可见
+    await page.locator("[data-testid=nav-phones]").click();
+    await expect(page.locator("#phones-details")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("S10 左栏导航：五项齐全、默认会话页、切守护/设置生效", async () => {
+  const app = await launchApp(makeSyntheticHome());
+  try {
+    const page = await app.firstWindow();
+    for (const key of ["sessions", "phones", "guard", "logs", "settings"]) {
+      await expect(page.locator(`[data-testid=nav-${key}]`)).toBeVisible();
+    }
+    // 默认会话 tab
+    await expect(page.locator("#tab-sessions")).toBeVisible();
+    await expect(page.locator("#phones-details")).toBeHidden();
+
+    // 切守护：会话页隐藏、守护页可见，默认启用角标
+    await page.locator("[data-testid=nav-guard]").click();
+    await expect(page.locator("#tab-sessions")).toBeHidden();
+    await expect(page.locator("#guard-details")).toBeVisible();
+    await expect(page.locator('[data-nav-badge=guard]')).toHaveText("看护中");
+
+    // 切设置：开机自启 checkbox 可见
+    await page.locator("[data-testid=nav-settings]").click();
+    await expect(page.locator("#tab-settings")).toBeVisible();
+    await expect(page.locator("#loginitem-cb")).toBeVisible();
+
+    // 切日志：大日志窗可见
+    await page.locator("[data-testid=nav-logs]").click();
+    await expect(page.locator("#main-log")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("S11 会话按项目分组：默认收起、组头文案、点开再收起", async () => {
+  const home = makeSyntheticHome();
+  writeSyntheticTranscript(home);
+  const app = await launchApp(home);
+  try {
+    const page = await app.firstWindow();
+    const head = page.locator("[data-testid=group-head]");
+    await expect(head).toBeVisible();
+    await expect(head.locator(".group-name")).toHaveText("wp5");
+    await expect(head.locator(".group-meta")).toHaveText(/1 个/);
+    // 默认箭头 ▸、组内会话行隐藏
+    await expect(head.locator(".group-arrow")).toHaveText("▸");
+    const items = page.locator(".group-items");
+    await expect(items).toBeHidden();
+
+    // 点开：行出现、箭头翻 ▾
+    await head.click();
+    await expect(items).toBeVisible();
+    await expect(head.locator(".group-arrow")).toHaveText("▾");
+    await expect(items.locator("li[data-session]")).toBeVisible();
+
+    // 再点收起
+    await head.click();
+    await expect(items).toBeHidden();
+    await expect(head.locator(".group-arrow")).toHaveText("▸");
+  } finally {
+    await app.close();
+  }
+});
+
+test("S12 窗口内解除绑定：确认后行消失+空态出现、config 落盘已删配对", async () => {
+  const home = makeSyntheticHome();
+  const app = await launchApp(home);
+  try {
+    const page = await app.firstWindow();
+    await page.locator("[data-testid=nav-phones]").click();
+    await expect(page.locator("[data-testid=paired-phone]")).toContainText("冒烟假手机");
+    await expect(page.locator("#phones-empty")).toBeHidden();
+
+    // 解绑有 confirm 弹窗——自动接受（含可能的失败 alert）
+    page.on("dialog", (d) => void d.accept());
+    await page.locator("[data-testid=phone-unpair]").click();
+
+    // 桥真删配对（revokePeer → 推送状态）：行消失、空态出现
+    await expect(page.locator("[data-testid=paired-phone]")).toHaveCount(0);
+    await expect(page.locator("#phones-empty")).toBeVisible();
+    // 面板徽章「全部离线」；左栏角标总数归零（空串）
+    await expect(page.locator("#phones-badge")).toHaveText("全部离线");
+    await expect(page.locator('[data-nav-badge=phones]')).toHaveText("");
+
+    // 落盘回读：解绑不只是 UI 行为，config.json paired 已清空
+    const cfg = JSON.parse(readFileSync(join(home, ".larkwire", "config.json"), "utf8")) as { paired: unknown[] };
+    expect(cfg.paired).toEqual([]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("S13 行内「重新配对」：确认后先解绑落盘→自动亮二维码（区别于「解除绑定」不亮码）", async () => {
+  const home = makeSyntheticHome();
+  const app = await launchApp(home);
+  try {
+    const page = await app.firstWindow();
+    await page.locator("[data-testid=nav-phones]").click();
+    await expect(page.locator("[data-testid=phone-repair]")).toBeVisible();
+
+    // 重新配对有 confirm 弹窗——自动接受（含可能的失败 alert）
+    page.on("dialog", (d) => void d.accept());
+    await page.locator("[data-testid=phone-repair]").click();
+
+    // 链路一：解绑真落盘（不等扫码，config paired 已清空）
+    await expect
+      .poll(() => {
+        const cfg = JSON.parse(readFileSync(join(home, ".larkwire", "config.json"), "utf8")) as { paired: unknown[] };
+        return cfg.paired.length;
+      })
+      .toBe(0);
+
+    // 链路二：解绑后续接 pairStart，配对视图 + 真实生产 QR（PairOfferAck 已回）
+    await expect(page.locator("#view-pair")).toBeVisible();
+    await expect(page.locator("#qr:not(.hidden)")).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator("#view-main")).toBeHidden();
+  } finally {
+    await app.close();
   }
 });
 

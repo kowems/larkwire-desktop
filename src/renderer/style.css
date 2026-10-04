@@ -19,7 +19,8 @@ body {
 .hidden { display: none !important; }
 .mono { font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
 .dim { color: var(--dim); }
-.view { padding: 24px 28px; max-width: 860px; margin: 0 auto; }
+.view { padding: 24px 28px; }
+#view-pair { max-width: 860px; margin: 0 auto; }
 h1 { font-size: 22px; margin: 8px 0 2px; }
 h2 { font-size: 15px; margin: 0 0 10px; }
 .sub { color: var(--dim); margin: 0 0 18px; }
@@ -69,6 +70,9 @@ h2 { font-size: 15px; margin: 0 0 10px; }
   word-break: break-all;
   margin: 12px 0 0;
 }
+/* 日志独立成页（#76）：大窗撑满，不再限 160px */
+#tab-logs { display: flex; flex-direction: column; }
+#tab-logs .log { flex: 1; max-height: none; }
 
 /* ---- 主视图 ---- */
 #statusbar {
@@ -92,7 +96,6 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 #loginitem-label { color: var(--dim); user-select: none; }
 #loginitem-label input { vertical-align: -2px; }
 
-#sessions-pane h2 { margin-bottom: 8px; }
 #sessions-list { list-style: none; margin: 0; padding: 0; }
 #sessions-list li {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
@@ -126,30 +129,86 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 .s-btn:active { opacity: 0.8; }
 #sessions-empty { padding: 18px 0; text-align: center; }
 
-/* ---- 系统守护 ---- */
+/* ---- #77 会话按项目分组：组头可点收起展开（口径对齐手机 sessions.vue） ---- */
+#sessions-list li.session-group {
+  display: block;
+  background: transparent;
+  padding: 0;
+}
+.group-head {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  border: 0; border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--panel);
+  cursor: pointer;
+  text-align: left;
+}
+.group-head:hover { background: #2d333f; }
+.group-arrow { color: var(--dim); width: 14px; flex: none; }
+.group-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-meta { flex: none; font-size: 12px; color: var(--dim); white-space: nowrap; }
+.group-items {
+  list-style: none; margin: 0; padding: 4px 0 6px 14px;
+}
+
+/* 我的手机行：名称左、[重新配对][解除绑定] 右（与会话行同构） */
+#phones-list { list-style: none; margin: 0; padding: 0; }
+#phones-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+#phones-list li > span:first-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.phone-actions { display: flex; gap: 8px; flex: none; }
+
+/* ---- 功能徽章（手机/守护共用） ---- */
 .badge-ok { background: rgba(62, 207, 142, 0.16); color: var(--ok); }
 .badge-dim { background: #333947; color: var(--dim); }
 
-#guard-details { margin-top: 16px; }
-#guard-details > summary { cursor: pointer; user-select: none; }
-#guard-details .badge { margin-left: 6px; }
-.guard-body {
-  background: var(--panel);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin-top: 8px;
-}
 .guard-head {
   display: flex; align-items: center; gap: 14px;
   flex-wrap: wrap; margin-bottom: 4px;
 }
 .guard-head input { vertical-align: -2px; }
-.guard-body h3 { font-size: 13px; color: var(--dim); margin: 8px 0 4px; font-weight: 600; }
+h3 { font-size: 13px; color: var(--dim); margin: 14px 0 4px; font-weight: 600; }
 #guard-suspects, #guard-events { list-style: none; margin: 0; padding: 0; }
 #guard-suspects li, #guard-events li { padding: 3px 0; }
 .guard-ts { margin-right: 8px; }
 
-#log-details { margin-top: 16px; }
-#log-details summary { color: var(--dim); cursor: pointer; user-select: none; }
+/* ---- #76 信息架构：shell 左栏导航 + 右侧 tab 内容区 ---- */
+#view-main { display: flex; flex-direction: column; height: 100%; padding: 14px 18px; }
+.app-shell { flex: 1; display: grid; grid-template-columns: 156px 1fr; min-height: 0; }
+.nav {
+  display: flex; flex-direction: column; gap: 2px;
+  border-right: 1px solid #333947;
+  padding: 6px 8px 6px 0;
+}
+.nav-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  border: 0; border-radius: 8px; padding: 8px 10px;
+  font-size: 13px; cursor: pointer; color: var(--dim); background: transparent;
+  text-align: left;
+}
+.nav-item:hover { background: #262a33; color: var(--fg); }
+.nav-item.active { background: #2d333f; color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+.nav-badge {
+  border-radius: 9px; padding: 0 7px; font-size: 11px; line-height: 16px;
+  background: #3a4150; color: var(--dim); white-space: nowrap;
+}
+.nav-badge:empty { display: none; }
+.nav-badge.badge-ok, .nav-badge.badge-dim { padding: 0 7px; }
+
+.tab-body { overflow-y: auto; min-height: 0; padding: 6px 0 6px 22px; }
+.tab { max-width: 720px; }
+.tab h2 .badge { margin-left: 6px; vertical-align: 2px; }
+#tab-settings #loginitem-label { color: var(--dim); user-select: none; }
+#tab-settings #loginitem-label input { vertical-align: -2px; }
 
 #preload-fail { padding: 40px; text-align: center; color: var(--danger); }

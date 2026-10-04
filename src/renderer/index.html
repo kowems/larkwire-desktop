@@ -46,13 +46,18 @@
       <p id="pair-error-msg"></p>
       <div class="btn-row">
         <button id="pair-retry" class="btn primary">重试</button>
+        <button id="pair-cancel-error" class="btn">取消</button>
       </div>
+    </div>
+
+    <div class="btn-row" id="pair-cancel-row">
+      <button id="pair-cancel" class="btn" data-testid="pair-cancel">取消</button>
     </div>
 
     <pre id="pair-log" class="log"></pre>
   </section>
 
-  <!-- ===== 主视图 ===== -->
+  <!-- ===== 主视图：顶部全局状态条 + 左栏导航 + 右侧各功能 tab（#76 信息架构重分类） ===== -->
   <section id="view-main" class="view hidden">
     <header id="statusbar">
       <span id="conn-dot" class="dot"></span>
@@ -60,8 +65,6 @@
       <span class="sep"></span>
       <span id="phones-text">— 台手机</span>
       <span id="perm-badge" class="badge hidden"></span>
-      <span class="sep"></span>
-      <label id="loginitem-label"><input type="checkbox" id="loginitem-cb" /> 开机自启</label>
     </header>
 
     <div id="notice-banner" class="panel notice hidden">
@@ -72,39 +75,72 @@
       <strong>⚠ 桥启动失败：</strong><span id="fatal-msg"></span>
     </div>
 
-    <main id="sessions-pane">
-      <h2>会话 <span id="sessions-count" class="dim"></span></h2>
-      <ul id="sessions-list"></ul>
-      <p id="sessions-empty" class="dim">暂无会话——在电脑上启动 Claude Code / Codex 后会出现在这里。</p>
-    </main>
+    <div class="app-shell">
+      <nav class="nav" data-testid="app-nav">
+        <button class="nav-item active" data-tab="sessions" data-testid="nav-sessions">
+          <span>💻 会话</span><span class="nav-badge" data-nav-badge="sessions"></span>
+        </button>
+        <button class="nav-item" data-tab="phones" data-testid="nav-phones">
+          <span>📱 我的手机</span><span class="nav-badge" data-nav-badge="phones"></span>
+        </button>
+        <button class="nav-item" data-tab="guard" data-testid="nav-guard">
+          <span>🛡 系统守护</span><span class="nav-badge" data-nav-badge="guard"></span>
+        </button>
+        <button class="nav-item" data-tab="logs" data-testid="nav-logs">
+          <span>📄 日志</span>
+        </button>
+        <button class="nav-item" data-tab="settings" data-testid="nav-settings">
+          <span>⚙ 设置</span>
+        </button>
+      </nav>
 
-    <!-- 系统守护（#72，2026-09-28 拍板并入 App）：CPU 失控进程兜底 -->
-    <details id="guard-details" class="guard" open>
-      <summary>
-        系统守护
-        <span id="guard-state-badge" class="badge"></span>
-      </summary>
-      <div class="guard-body">
-        <div class="guard-head">
-          <label><input type="checkbox" id="guard-enabled-cb" /> 启用守护</label>
-          <span id="guard-meta" class="dim"></span>
-        </div>
-        <div id="guard-suspects-wrap" class="hidden">
-          <h3>可疑进程</h3>
-          <ul id="guard-suspects"></ul>
-        </div>
-        <h3>近期处置</h3>
-        <ul id="guard-events"></ul>
-        <p id="guard-events-empty" class="dim">暂无处置</p>
+      <div class="tab-body">
+        <!-- 会话（默认页） -->
+        <section class="tab" id="tab-sessions">
+          <h2>会话 <span id="sessions-count" class="dim"></span></h2>
+          <ul id="sessions-list"></ul>
+          <p id="sessions-empty" class="dim">暂无会话——在电脑上启动 Claude Code / Codex 后会出现在这里。</p>
+        </section>
+
+        <!-- 我的手机：手机离线/换手机时从这里重新亮码（修复 2026-09-29 手机存旧局域网中继事故） -->
+        <section class="tab hidden" id="phones-details">
+          <h2>我的手机 <span id="phones-badge" class="badge"></span></h2>
+          <ul id="phones-list"></ul>
+          <p id="phones-empty" class="dim">还没有配对手机</p>
+          <div class="btn-row">
+            <button id="pair-add-btn" class="btn primary" data-testid="pair-add">配对手机</button>
+          </div>
+        </section>
+
+        <!-- 系统守护（#72，2026-09-28 拍板并入 App）：CPU 失控进程兜底 -->
+        <section class="tab hidden" id="guard-details">
+          <h2>系统守护 <span id="guard-state-badge" class="badge"></span></h2>
+          <div class="guard-head">
+            <label><input type="checkbox" id="guard-enabled-cb" /> 启用守护</label>
+            <span id="guard-meta" class="dim"></span>
+          </div>
+          <div id="guard-suspects-wrap" class="hidden">
+            <h3>可疑进程</h3>
+            <ul id="guard-suspects"></ul>
+          </div>
+          <h3>近期处置</h3>
+          <ul id="guard-events"></ul>
+          <p id="guard-events-empty" class="dim">暂无处置</p>
+        </section>
+
+        <!-- 日志独立成页：桌面端无推送，日志是感知桥状态的唯一直接通道
+             （默认展开折叠态实战两次找不到：T2 抢夺诊断/T4a 验证=需求侧证据） -->
+        <section class="tab hidden" id="tab-logs">
+          <h2>桥日志</h2>
+          <pre id="main-log" class="log"></pre>
+        </section>
+
+        <section class="tab hidden" id="tab-settings">
+          <h2>设置</h2>
+          <label id="loginitem-label"><input type="checkbox" id="loginitem-cb" /> 开机自启</label>
+        </section>
       </div>
-    </details>
-
-    <!-- 默认展开（2026-09-24 Eric 拍板）：桌面端无推送，日志是感知桥状态的唯一直接通道，
-         折叠态实战两次找不到（T2 抢夺诊断/T4a 验证）=需求侧证据 -->
-    <details id="log-details" open>
-      <summary>桥日志</summary>
-      <pre id="main-log" class="log"></pre>
-    </details>
+    </div>
   </section>
 
   <script src="renderer.js"></script>

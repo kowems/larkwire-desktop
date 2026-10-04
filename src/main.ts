@@ -13,7 +13,7 @@
  */
 import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage } from "electron";
 import { execFile } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,11 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  *  HOME 隔离对它无效——e2e 必须用不存在的 Label 变体，否则合成 plist 会误杀 Eric 的真常驻桥 */
 const LAUNCHD_LABEL = process.env.LARKWIRE_LAUNCHD_LABEL ?? "site.kowems.larkwire.bridge";
 const LAUNCHD_PLIST = join(homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+/** 主进程落盘日志（#78 三方对账）：所有 sendLog 行同时写这里，App 重启/关窗都不丢 */
+const LOG_DIR = join(homedir(), ".larkwire");
+const LOG_FILE = join(LOG_DIR, "desktop.log");
+const LOG_OLD_FILE = join(LOG_DIR, "desktop.log.old");
+const LOG_MAX_BYTES = 1_000_000;
 const execFileP = promisify(execFile);
 
 type View = "pair" | "main";
@@ -56,6 +61,8 @@ let lastFatal: string | null = null;
 let notice: string | null = null;
 /** 指纹人对照的挂起 Promise——同一时刻至多一个（pair 流程串行） */
 let fpResolve: ((ok: boolean) => void) | null = null;
+/** 配对流在途标志（首启自动配对/托盘入口/主窗按钮/重试四源汇入，防并发重入） */
+let pairRunning = false;
 
 // ---------- 工具 ----------
 
@@ -70,7 +77,47 @@ function send(channel: string, payload: unknown): void {
 let rendererReady = false;
 const logBuffer: string[] = [];
 
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/** 本地时区秒级时间戳（YYYY-MM-DD HH:MM:SS）——落盘对账口径，与全局规则一致 */
+function tsNow(): string {
+  const d = new Date();
+  return (
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  );
+}
+
+/**
+ * 追加写盘：单行失败（磁盘满/权限）只吞不挡 UI 日志。
+ * 超 1MB 轮转一次（desktop.log → desktop.log.old），只留一代——够对一次解绑账。
+ */
+function writeDiskLog(line: string): void {
+  try {
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+    let size = 0;
+    try {
+      size = statSync(LOG_FILE).size;
+    } catch {
+      /* 文件还没有 */
+    }
+    if (size > LOG_MAX_BYTES) {
+      try {
+        renameSync(LOG_FILE, LOG_OLD_FILE);
+      } catch {
+        /* 轮转失败就覆盖续写，不挡日志 */
+      }
+    }
+    appendFileSync(LOG_FILE, `${tsNow()} ${line}\n`, { mode: 0o600 });
+  } catch {
+    /* 落盘失败不拖垮主流程 */
+  }
+}
+
 function sendLog(line: string): void {
+  writeDiskLog(line);
   if (rendererReady) {
     send("log", line);
   } else {
@@ -105,6 +152,8 @@ interface StatePayload {
       occupancy: Occupancy;
     }[];
   } | null;
+  /** 配对手机名单（名字直接读 config——桥 snapshot 只给计数不给名） */
+  paired: { deviceId: string; name: string }[];
   /** 系统守护状态（任何视图都在——守护独立于桥） */
   guard: GuardSnapshot | null;
 }
@@ -132,6 +181,7 @@ function statePayload(): StatePayload {
         occupancy: s.occupancy,
       })),
     },
+    paired: (loadConfig()?.paired ?? []).map((p) => ({ deviceId: p.deviceId, name: p.name })),
     guard: guard ? guard.snapshot() : null,
   };
 }
@@ -158,6 +208,13 @@ function refreshTray(st: StatePayload): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示主窗", click: () => showWindow() },
+      {
+        label: "配对新手机…",
+        click: () => {
+          showWindow();
+          void startPairFlow("tray");
+        },
+      },
       { label: trayStatus(st), enabled: false },
       { type: "separator" },
       {
@@ -212,10 +269,19 @@ function createWindow(): void {
     for (const line of logBuffer.splice(0)) send("log", line);
   });
   win.on("close", (e) => {
-    // close-to-tray：主窗关掉只是藏起来，桥照跑（手机无感）；
-    // 配对视图还没桥可留，关窗=放弃配对退出 app
-    if (quitting || view === "pair") return;
+    // close-to-tray：主窗关掉只是藏起来，桥照跑（手机无感）。
+    // 配对视图：首启无配对关窗=放弃→退出；重配关窗=取消重配、回主窗后收进托盘
+    if (quitting) return;
     e.preventDefault();
+    if (view === "pair") {
+      const cfg = loadConfig();
+      if (!cfg || cfg.paired.length === 0) {
+        app.quit();
+        return;
+      }
+      void cancelPairFlow().finally(() => win?.hide());
+      return;
+    }
     win?.hide();
   });
   win.on("closed", () => {
@@ -227,9 +293,37 @@ function createWindow(): void {
 
 // ---------- 配对流（PairHooks 注入窗口交互） ----------
 
-function startPairFlow(): void {
+/** 短调用栈：只留本进程 6 帧内的工程路径，定位「谁触发了配对视图」（#78 对账插桩） */
+function shortStack(): string {
+  const frames = (new Error().stack ?? "").split("\n").slice(2, 8);
+  return frames
+    .map((f) => f.replace(/^\s*at /, "").replace(/file:\/\/\/.*\/src\//g, ""))
+    .join(" < ");
+}
+
+/**
+ * 进入配对视图（首启自动配对 / 托盘「配对新手机」/ 主窗按钮 / 失败重试 四源汇入）：
+ * 主窗重配时桥占着同一桥身份的中继连接——先停桥腾出身份，否则与 runPair 互踢（4000）。
+ * pairRunning 防并发重入；runPair 无外部中止口，取消=另走 cancelPairFlow（新桥连接踢掉旧的）。
+ * source 标签 + 调用栈仅为日志对账：查清「没点配对却跳二维码」的真实触发源。
+ */
+async function startPairFlow(source: string): Promise<void> {
+  sendLog(`▶ 配对流启动（来源=${source}）栈：${shortStack()}`);
+  if (pairRunning) {
+    sendLog(`↩ 配对流已在途，忽略来源=${source} 的重复触发`);
+    return;
+  }
+  pairRunning = true;
   view = "pair";
   lastFatal = null;
+  if (bridge) {
+    sendLog("正在暂停桥以进行配对…");
+    const b = bridge;
+    bridge = null; // 状态条立刻反映「桥未启动」，stop 期间不再推桥事件
+    pushState();
+    await b.stop().catch(() => {});
+  }
+  send("pair:reset", null);
   pushState();
   void runPair(
     {},
@@ -255,7 +349,25 @@ function startPairFlow(): void {
     .catch((err: unknown) => {
       fpResolve = null;
       send("pair:error", { message: err instanceof Error ? err.message : String(err) });
+    })
+    .finally(() => {
+      pairRunning = false;
     });
+}
+
+/** 配对视图「取消」：无配对=首启放弃→退出；有配对→回主视图——新桥连接会 4000 踢掉
+ *  仍在等扫码的配对连接（runPair 无中止口），其 reject 落 pair:error，主视图不显示，无害 */
+async function cancelPairFlow(): Promise<void> {
+  sendLog("配对流取消（cancelPairFlow）");
+  if (view !== "pair") return;
+  fpResolve?.(false);
+  fpResolve = null;
+  const cfg = loadConfig();
+  if (!cfg || cfg.paired.length === 0) {
+    app.quit();
+    return;
+  }
+  await startMainFlow();
 }
 
 // ---------- launchd 接管（WP3） ----------
@@ -292,6 +404,7 @@ async function takeoverLegacyLaunchd(): Promise<void> {
 // ---------- 主流（startBridge + 事件 → 状态推送） ----------
 
 async function startMainFlow(): Promise<void> {
+  sendLog("▶ 主流启动（起桥）");
   view = "main";
   lastFatal = null;
   pushState(); // 先亮主窗骨架（接管横幅可见），再接管+起桥
@@ -313,6 +426,7 @@ async function startMainFlow(): Promise<void> {
   bridge.on("conn", () => pushState());
   bridge.on("phones", () => pushState());
   bridge.on("sessions", () => pushState());
+  bridge.on("revoked", () => pushState());
   bridge.on("fatal", (info) => {
     lastFatal = info.message;
     pushState();
@@ -350,18 +464,24 @@ async function openInTerminal(sessionId: string): Promise<{ ok: boolean; reason?
 
 // ---------- IPC ----------
 
-ipcMain.handle("state:get", () => statePayload());
+ipcMain.handle("state:get", () => {
+  sendLog("IPC state:get");
+  return statePayload();
+});
 
 // WP5 #49 三动作：还回 / 终端打开 / 关掉别窗并接管
 ipcMain.handle("session:release", (_e, sessionId: unknown) => {
+  sendLog(`IPC session:release ${String(sessionId)}`);
   if (typeof sessionId !== "string" || !bridge) return false;
   return bridge.releaseSession(sessionId);
 });
 ipcMain.handle("session:open-terminal", (_e, sessionId: unknown) => {
+  sendLog(`IPC session:open-terminal ${String(sessionId)}`);
   if (typeof sessionId !== "string") return { ok: false, reason: "会话 ID 无效" };
   return openInTerminal(sessionId);
 });
 ipcMain.handle("session:kill-open", async (_e, sessionId: unknown) => {
+  sendLog(`IPC session:kill-open ${String(sessionId)}`);
   if (typeof sessionId !== "string" || !bridge) {
     return { ok: false, reason: "桥未启动或会话 ID 无效" };
   }
@@ -371,18 +491,39 @@ ipcMain.handle("session:kill-open", async (_e, sessionId: unknown) => {
   const opened = await openInTerminal(sessionId);
   return opened.ok ? { ok: true, pid: killed.pid } : { ok: false, reason: opened.reason };
 });
+// 「我的手机」页解除绑定：撤销走桥（在线时通知手机+中继），不再需要终端 larkwire unpair
+ipcMain.handle("pair:revoke", (_e, deviceId: unknown) => {
+  sendLog(`IPC pair:revoke 目标=${String(deviceId)}`);
+  if (typeof deviceId !== "string" || !bridge) return false;
+  const ok = bridge.revokePeer(deviceId);
+  sendLog(ok ? `解绑结果：已撤销 ${String(deviceId)}` : `解绑结果：失败（该手机不在配对列表）`);
+  if (ok) pushState();
+  return ok;
+});
 ipcMain.on("pair:confirm", (_e, ok: unknown) => {
+  sendLog(`IPC pair:confirm 结果=${ok === true}`);
   fpResolve?.(ok === true);
   fpResolve = null;
 });
 ipcMain.on("pair:retry", () => {
-  if (view === "pair") startPairFlow();
+  sendLog("IPC pair:retry（渲染端「重试」）");
+  if (view === "pair") void startPairFlow("ipc:pair-retry");
+});
+ipcMain.on("pair:cancel", () => {
+  sendLog("IPC pair:cancel（渲染端「取消」）");
+  void cancelPairFlow();
+});
+ipcMain.on("pair:start", () => {
+  sendLog("IPC pair:start（渲染端「配对/添加手机」按钮，或行内「重新配对」解绑后续接）");
+  void startPairFlow("ipc:pair-start");
 });
 ipcMain.on("loginitem:set", (_e, open: unknown) => {
+  sendLog(`IPC loginitem:set ${open === true}`);
   app.setLoginItemSettings({ openAtLogin: open === true });
   pushState();
 });
 ipcMain.handle("guard:set-enabled", (_e, on: unknown) => {
+  sendLog(`IPC guard:set-enabled ${on === true}`);
   guard?.setEnabled(on === true);
   return guard?.snapshot().enabled ?? false;
 });
@@ -395,7 +536,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => showWindow());
   app.on("activate", () => showWindow()); // macOS dock 点击
   app.on("window-all-closed", () => {
-    // 主窗 close-to-tray 不会触发这里；配对视图关窗=放弃 → 退出
+    // 主窗 close-to-tray 不会触发这里；首启配对视图关窗=放弃 → 退出
     if (view === "pair") app.quit();
   });
   app.on("before-quit", (e) => {
@@ -430,7 +571,10 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     createWindow();
     const cfg = loadConfig();
-    if (!cfg || cfg.paired.length === 0) startPairFlow();
+    sendLog(
+      `—— App 启动（packaged=${app.isPackaged}）配置：${cfg ? `已配对 ${cfg.paired.length} 台` : "无配置"}——`,
+    );
+    if (!cfg || cfg.paired.length === 0) void startPairFlow("startup");
     else void startMainFlow();
   });
 }

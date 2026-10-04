@@ -23,10 +23,14 @@ contextBridge.exposeInMainWorld("larkwire", {
   onPairUrl: on("pair:url"),
   onPairFp: on("pair:fp"),
   onPairError: on("pair:error"),
+  onPairReset: on("pair:reset"),
   // 渲染 → 主
   getState: () => ipcRenderer.invoke("state:get"),
   pairConfirm: (ok: boolean) => ipcRenderer.send("pair:confirm", ok),
   pairRetry: () => ipcRenderer.send("pair:retry"),
+  pairCancel: () => ipcRenderer.send("pair:cancel"),
+  pairStart: () => ipcRenderer.send("pair:start"),
+  pairRevoke: (deviceId: string) => ipcRenderer.invoke("pair:revoke", deviceId),
   setLoginItem: (open: boolean) => ipcRenderer.send("loginitem:set", open),
   // WP5 #49 会话占用管理
   releaseSession: (sessionId: string) => ipcRenderer.invoke("session:release", sessionId),

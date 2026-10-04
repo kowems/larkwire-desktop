@@ -1,6 +1,6 @@
 {
   "name": "@larkwire/desktop",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "灵鹊 Larkwire 桌面壳（Electron）——双皮一份逻辑：桥核心 import 自 @larkwire/core 包，CLI 与桌面共用；系统守护（CPU 失控兜底）同在此壳",
   "license": "MIT",
   "type": "module",
