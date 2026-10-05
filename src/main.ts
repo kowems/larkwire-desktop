@@ -63,11 +63,47 @@ let notice: string | null = null;
 let fpResolve: ((ok: boolean) => void) | null = null;
 /** 配对流在途标志（首启自动配对/托盘入口/主窗按钮/重试四源汇入，防并发重入） */
 let pairRunning = false;
+/**
+ * 配对视图最近一帧瞬态（reset/url/fp/error）。webContents.send 不等渲染进程就绪：
+ * 握手极快时 pair.url 可能早于 renderer.js 的 onPairUrl 监听注册，帧直接丢失、
+ * 界面永久停在「正在连接中继，生成二维码」。渲染端启动注册监听后经 pair:snapshot
+ * 主动拉一次回补——与 state 的 getState() 拉取兜底同口径。
+ */
+let pairSnapshot:
+  | { phase: "reset" }
+  | { phase: "url"; data: PairUrlData }
+  | { phase: "fp"; data: PairFpData }
+  | { phase: "error"; data: { message: string } }
+  | null = null;
+interface PairUrlData {
+  dataUrl: string;
+  pairUrl: string;
+  bridgeFp: string;
+}
+interface PairFpData {
+  phoneName: string;
+  phoneDeviceId: string;
+  bridgeFp: string;
+  phoneFp: string;
+}
 
 // ---------- 工具 ----------
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+/**
+ * 配对帧统一出口：先留快照再下发。渲染端可经 pair:snapshot 回补启动前
+ * （或监听器注册前）丢失的最近一帧——见 pairSnapshot 声明注释。
+ */
+function pairFrame(frame: NonNullable<typeof pairSnapshot>): void {
+  pairSnapshot = frame;
+  if (frame.phase === "reset") {
+    send("pair:reset", null);
+  } else {
+    send(`pair:${frame.phase}`, frame.data);
+  }
 }
 
 /**
@@ -323,7 +359,7 @@ async function startPairFlow(source: string): Promise<void> {
     pushState();
     await b.stop().catch(() => {});
   }
-  send("pair:reset", null);
+  pairFrame({ phase: "reset" });
   pushState();
   void runPair(
     {},
@@ -331,13 +367,15 @@ async function startPairFlow(source: string): Promise<void> {
       onLog: (line) => sendLog(line),
       showPairUrl: (pairUrl, bridgeFp) => {
         void QRCode.toDataURL(pairUrl, { width: 480, margin: 1 })
-          .then((dataUrl) => send("pair:url", { dataUrl, pairUrl, bridgeFp }))
-          .catch((err: unknown) => send("pair:error", { message: `二维码生成失败：${String(err)}` }));
+          .then((dataUrl) => pairFrame({ phase: "url", data: { dataUrl, pairUrl, bridgeFp } }))
+          .catch((err: unknown) =>
+            pairFrame({ phase: "error", data: { message: `二维码生成失败：${String(err)}` } }),
+          );
       },
       confirmFingerprint: (ctx) =>
         new Promise<boolean>((resolve) => {
           fpResolve = resolve;
-          send("pair:fp", ctx);
+          pairFrame({ phase: "fp", data: ctx });
         }),
     },
   )
@@ -348,7 +386,7 @@ async function startPairFlow(source: string): Promise<void> {
     })
     .catch((err: unknown) => {
       fpResolve = null;
-      send("pair:error", { message: err instanceof Error ? err.message : String(err) });
+      pairFrame({ phase: "error", data: { message: err instanceof Error ? err.message : String(err) } });
     })
     .finally(() => {
       pairRunning = false;
@@ -407,6 +445,7 @@ async function startMainFlow(): Promise<void> {
   sendLog("▶ 主流启动（起桥）");
   view = "main";
   lastFatal = null;
+  pairSnapshot = null; // 已离开配对视图，回补快照作废
   pushState(); // 先亮主窗骨架（接管横幅可见），再接管+起桥
   await takeoverLegacyLaunchd();
   try {
@@ -468,6 +507,9 @@ ipcMain.handle("state:get", () => {
   sendLog("IPC state:get");
   return statePayload();
 });
+
+// 配对视图回补：渲染端监听器注册后拉一次最近配对帧（启动竞态兜底，见 pairFrame）
+ipcMain.handle("pair:snapshot", () => pairSnapshot);
 
 // WP5 #49 三动作：还回 / 终端打开 / 关掉别窗并接管
 ipcMain.handle("session:release", (_e, sessionId: unknown) => {

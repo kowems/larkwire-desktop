@@ -408,24 +408,37 @@ function main(api) {
     appendLog(els.pairLog, line);
     appendLog(els.mainLog, line);
   });
-  api.onPairUrl(({ dataUrl, pairUrl, bridgeFp }) => {
+  // 配对帧处理：实时事件与启动快照回补走同一份函数（避免两路口径漂移）
+  const handlePairUrl = ({ dataUrl, pairUrl, bridgeFp }) => {
     els.qr.src = dataUrl;
     show(els.qr, true);
     show(els.qrWaiting, false);
     els.pairUrl.textContent = pairUrl;
     els.bridgeFp.textContent = bridgeFp;
-  });
-  api.onPairFp((ctx) => {
+  };
+  const handlePairFp = (ctx) => {
     els.fpBridge.textContent = ctx.bridgeFp;
     els.fpPhone.textContent = ctx.phoneFp;
     els.fpPhoneName.textContent = ctx.phoneName ? `（${ctx.phoneName}）` : "";
     show(els.fpPanel, true);
-  });
-  api.onPairError(({ message }) => {
+  };
+  const handlePairError = ({ message }) => {
     els.pairErrorMsg.textContent = message;
     show(els.pairError, true);
     show(els.fpPanel, false);
-  });
+  };
+  // 配对视图复位：主进程 startPairFlow 统一发（进视图/重试）——QR/指纹/错误全回初态
+  const handlePairReset = () => {
+    show(els.pairError, false);
+    els.qr.removeAttribute("src");
+    show(els.qr, false);
+    show(els.qrWaiting, true);
+    els.fpPanel.classList.add("hidden");
+  };
+  api.onPairUrl(handlePairUrl);
+  api.onPairFp(handlePairFp);
+  api.onPairError(handlePairError);
+  api.onPairReset(handlePairReset);
 
   els.fpYes.addEventListener("click", () => {
     show(els.fpPanel, false);
@@ -434,14 +447,6 @@ function main(api) {
   els.fpNo.addEventListener("click", () => {
     show(els.fpPanel, false);
     api.pairConfirm(false);
-  });
-  // 配对视图复位：主进程 startPairFlow 统一发（进视图/重试）——QR/指纹/错误全回初态
-  api.onPairReset(() => {
-    show(els.pairError, false);
-    els.qr.removeAttribute("src");
-    show(els.qr, false);
-    show(els.qrWaiting, true);
-    els.fpPanel.classList.add("hidden");
   });
   els.pairRetry.addEventListener("click", () => {
     api.pairRetry();
@@ -462,4 +467,14 @@ function main(api) {
 
   // 首帧：拉一次全量状态（事件可能先于 JS 就绪到达）
   api.getState().then(renderState);
+
+  // 配对帧同理：握手极快时 pair:url 可能早于上面的监听器注册，主进程只留不重放。
+  // 监听器全部就位后拉一次最近配对帧回补——无快照（已进主界面）则什么都不做。
+  api.getPairSnapshot().then((frame) => {
+    if (!frame) return;
+    if (frame.phase === "reset") handlePairReset();
+    else if (frame.phase === "url") handlePairUrl(frame.data);
+    else if (frame.phase === "fp") handlePairFp(frame.data);
+    else if (frame.phase === "error") handlePairError(frame.data);
+  });
 }

@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("larkwire", {
   onPairReset: on("pair:reset"),
   // 渲染 → 主
   getState: () => ipcRenderer.invoke("state:get"),
+  getPairSnapshot: () => ipcRenderer.invoke("pair:snapshot"),
   pairConfirm: (ok: boolean) => ipcRenderer.send("pair:confirm", ok),
   pairRetry: () => ipcRenderer.send("pair:retry"),
   pairCancel: () => ipcRenderer.send("pair:cancel"),
