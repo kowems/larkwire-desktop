@@ -10,19 +10,133 @@
  * 无配对手机、零持久状态，等同任意新设备首连，无害）；LARKWIRE_AWAY_IDLE_SEC=99999 自噬隔离。
  */
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import { execSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execSync, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { deviceIdFromKey, generateKeyPair, u8ToB64 } from "@larkwire/protocol";
+import { deviceIdFromKey, generateKeyPair, u8ToB64, b64ToU8, makeEnvelope, type Envelope } from "@larkwire/protocol";
+import { WebSocket } from "ws";
+import nacl from "tweetnacl";
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url))); // e2e/ → packages/desktop
 const req = createRequire(join(pkgDir, "package.json"));
 /** electron 的 CJS index.js 导出二进制路径字符串（读 path.txt） */
 const electronBin = req("electron") as string;
+
+/**
+ * 按唯一 bundle id 经「全量 repeat + 属性内联判断」定位进程：读屏幕菜单栏真实加粗首项
+ * （Apple 为 item 1，App 菜单为 item 2）。不用 `first process whose ...`：实测本机同时有旧
+ * Electron 壳存活时，whose/first 选择器（含 unix id、bundle identifier is、甚至 whose ... contains）
+ * 一律被路由到旧壳——其 bid 甚至不含目标串；而 repeat 内逐个读 bundle identifier 走另一条解析路径，
+ * 实测能正确识别唯一新壳。进程未在 AX 注册/无辅助功能权限时返回 null，交外层重试。
+ */
+function axBoldMenuTitle(bundleId: string): string | null {
+  const script = `
+tell application "System Events"
+  set found to missing value
+  repeat with p in every application process
+    try
+      if bundle identifier of p contains "${bundleId}" then
+        set found to p
+        exit repeat
+      end if
+    end try
+  end repeat
+  if found is missing value then return "NO_PROC"
+  return name of menu bar item 2 of menu bar 1 of found
+end tell`;
+  try {
+    const out = execFileSync("osascript", ["-e", script], {
+      encoding: "utf8",
+      timeout: 20000,
+    }).trim();
+    return out === "NO_PROC" ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读关于窗（含「版本」开头静态文本的那个窗口）的全部静态文本，换行拼接返回。进程定位同
+ * axBoldMenuTitle：全量 repeat 按唯一 bundle id 过滤（whose/first 选择器实测串到旧壳）。
+ * 进程未找到或面板未出现均返回 null，交外层重试。
+ */
+function axAboutPanelTexts(bundleId: string): string | null {
+  const script = `
+tell application "System Events"
+  set found to missing value
+  repeat with p in every application process
+    try
+      if bundle identifier of p contains "${bundleId}" then
+        set found to p
+        exit repeat
+      end if
+    end try
+  end repeat
+  if found is missing value then return "NO_PROC"
+  set picked to missing value
+  repeat with w in windows of found
+    set vals to value of every static text of w
+    repeat with v in vals
+      if v starts with "版本" and v contains "(" then
+        set picked to vals
+        exit repeat
+      end if
+    end repeat
+    if picked is not missing value then exit repeat
+  end repeat
+  if picked is missing value then return "NO_ABOUT_WINDOW"
+  set oldDelims to AppleScript's text item delimiters
+  set AppleScript's text item delimiters to linefeed
+  set joined to picked as string
+  set AppleScript's text item delimiters to oldDelims
+  return joined
+end tell`;
+  try {
+    const out = execFileSync("osascript", ["-e", script], {
+      encoding: "utf8",
+      timeout: 20000,
+    }).trim();
+    return out === "NO_PROC" || out === "NO_ABOUT_WINDOW" ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * S17/S18 专用：准备一个「每次唯一」的克隆壳。本机同时有 Eric 正在运行的 dev 实例时，测试壳
+ * 与它共用 bundle id + 同一路径，System Events/LaunchServices 会串进程（AX 菜单点到旧壳、
+ * 读到 Electron 壳版本 44.4.5——S18 首跑实测）。克隆根目录放在包内（与 electron 同卷，APFS
+ * clone 才成立），bundle id 取自目录名保证唯一。
+ */
+function prepareE2eShell(): {
+  shellExe: string;
+  plist: string;
+  shellRoot: string;
+  bundleId: string;
+} {
+  const shellRoot = mkdtempSync(join(pkgDir, ".dev-shell-e2e-"));
+  const slug = basename(shellRoot).replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const bundleId = `site.kowims.larkwire.desktop.${slug}`;
+  const shellExe = execSync(`node ${join(pkgDir, "scripts", "dev-shell.mjs")} --prepare`, {
+    encoding: "utf8",
+    env: { ...process.env, LARKWIRE_DEV_SHELL_DIR: shellRoot, LARKWIRE_DEV_BUNDLE_ID: bundleId },
+  }).trim();
+  const plist = join(dirname(dirname(shellExe)), "Info.plist");
+  return { shellExe, plist, shellRoot, bundleId };
+}
+
+/** 删除测试专用克隆壳（须在 app.close() 后调）；失败不影响判定，残留由 .gitignore 忽略 */
+function removeE2eShell(shellRoot: string): void {
+  try {
+    rmSync(shellRoot, { recursive: true, force: true });
+  } catch {
+    // 环境不允许删除时留给人工清理
+  }
+}
 
 async function launchApp(home: string, extraEnv: Record<string, string> = {}): Promise<ElectronApplication> {
   // Cursor/VSCode 宿主给 Claude/终端 shell 注入 ELECTRON_RUN_AS_NODE=1——原样透传会让
@@ -139,6 +253,93 @@ function spawnLocalRelay(home: string): { relayProc: ChildProcess; relayUrl: str
   return { relayProc, relayUrl: `ws://127.0.0.1:${port}/ws` };
 }
 
+/** S16：模拟真手机——自持密钥对，走 hello→challenge→auth 完整握手（与中继集成测试 SimDevice 同口径） */
+class SimPhone {
+  readonly kp = nacl.box.keyPair();
+  readonly deviceId: string;
+  readonly name: string;
+  private ws!: WebSocket;
+
+  constructor(name: string) {
+    this.name = name;
+    this.deviceId = deviceIdFromKey(u8ToB64(this.kp.publicKey));
+  }
+
+  /** 连接并完成认证挑战，auth.ok 后返回 */
+  connect(url: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      this.ws = ws;
+      const timer = setTimeout(() => reject(new Error("模拟手机 connect/auth 超时")), 10_000);
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          kind: "hello",
+          v: 1,
+          deviceId: this.deviceId,
+          publicKey: u8ToB64(this.kp.publicKey),
+          name: this.name,
+        }));
+      });
+      ws.on("message", (data) => {
+        const msg = JSON.parse(data.toString()) as {
+          kind?: string;
+          cipher?: string;
+          ephemeralPublicKey?: string;
+        };
+        if (msg.kind === "auth.challenge") {
+          const packed = b64ToU8(msg.cipher as string);
+          const boxNonce = packed.slice(0, nacl.box.nonceLength);
+          const ct = packed.slice(nacl.box.nonceLength);
+          const nonce = nacl.box.open(
+            ct, boxNonce, b64ToU8(msg.ephemeralPublicKey as string), this.kp.secretKey,
+          );
+          if (!nonce) {
+            clearTimeout(timer);
+            reject(new Error("模拟手机 challenge 解不开"));
+            return;
+          }
+          ws.send(JSON.stringify({ kind: "auth.response", nonce: u8ToB64(nonce) }));
+        } else if (msg.kind === "auth.ok") {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      ws.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+  }
+
+  /** 手机扫码后发 pair.accept（to=relay，明文 body） */
+  sendPairAccept(token: string): void {
+    const body = { token, publicKey: u8ToB64(this.kp.publicKey), name: this.name };
+    this.ws.send(JSON.stringify(makeEnvelope("pair.accept", this.deviceId, "relay", 0, JSON.stringify(body))));
+  }
+
+  /** 等桥发来的指定类型信封（S16 用来确认 pair.confirm 已到） */
+  waitForEnvelope(type: string, timeoutMs = 10_000): Promise<Envelope> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`模拟手机等 ${type} 超时`)), timeoutMs);
+      this.ws.on("message", (data) => {
+        const msg = JSON.parse(data.toString()) as Partial<Envelope> & { kind?: string };
+        if (msg.v === 1 && msg.type === type) {
+          clearTimeout(timer);
+          resolve(msg as Envelope);
+        }
+      });
+    });
+  }
+
+  close(): void {
+    try {
+      this.ws.close();
+    } catch {
+      /* 已关则忽略 */
+    }
+  }
+}
+
 /** 轮询子进程 stdout，等到中继 listening（10s 超时） */
 async function waitRelayReady(relayProc: ChildProcess): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -160,6 +361,8 @@ test("S1 空 HOME → 首窗配对视图渲染", async () => {
   const app = await launchApp(mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-")));
   try {
     const page = await app.firstWindow();
+    // 应用名必须是「灵鹊」：dev 直接跑 Electron 壳时默认菜单首项显示 Electron（#86）
+    expect(await app.evaluate(({ app: electronApp }) => electronApp.name)).toBe("灵鹊");
     await expect(page.locator("#preload-fail")).toBeHidden();
     await expect(page.locator("#view-pair")).toBeVisible();
     // 中继通→qr 图；不通→waiting 文案；两者其一必须可见（不断言网络）
@@ -598,6 +801,76 @@ test("S15 本地快速握手：ack 毫秒级到达→二维码照常显示，pai
   }
 });
 
+test("S16 手机扫码后窗口换舞台：二维码收起、副标题变、确认键无需滚动完整可见且获焦，点确认配对落盘", async () => {
+  const relayHome = mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-"));
+  const { relayProc, relayUrl } = spawnLocalRelay(relayHome);
+  const phone = new SimPhone("扫码新手机");
+  try {
+    await waitRelayReady(relayProc);
+    const { home, bridgeDeviceId, phoneDeviceId } = makeSyntheticHomeEx(relayUrl);
+    seedActivePairing(join(relayHome, "relay.db"), bridgeDeviceId, phoneDeviceId);
+    const app = await launchApp(home);
+    try {
+      const page = await app.firstWindow();
+      await page.locator("[data-testid=nav-phones]").click();
+      page.on("dialog", (d) => void d.accept());
+      await page.locator("[data-testid=pair-add]").click();
+      await expect(page.locator("#qr:not(.hidden)")).toBeVisible({ timeout: 20_000 });
+
+      // 从画面上的配对 URL 取 token（与真手机扫码得到的是同一个），模拟手机走完真实握手
+      const pairUrl = (await page.locator("#pair-url").textContent()) as string;
+      const token = new URL(pairUrl).searchParams.get("t") as string;
+      expect(token.length).toBeGreaterThan(0);
+      await phone.connect(relayUrl);
+      // 桥应收到 pair.confirm——在发送 accept 前挂起等待
+      const confirmP = phone.waitForEnvelope("pair.confirm");
+      phone.sendPairAccept(token);
+
+      // 状态变化一：二维码舞台整组收起（不是在二维码下方追加内容）
+      await expect(page.locator("#pair-stage")).toBeHidden({ timeout: 10_000 });
+      // 状态变化二：副标题明示「手机已扫码」
+      await expect(page.locator("#pair-sub")).toHaveText(/✅ 手机「扫码新手机」已扫码/);
+      await expect(page.locator("#fp-panel.fp-focus")).toBeVisible();
+
+      // 交互重心：「一致，完成配对」完整落在视口内，无需滚动
+      const geom = await page.locator("#fp-yes").evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          top: r.top,
+          bottom: r.bottom,
+          vh: (globalThis as unknown as { innerHeight: number }).innerHeight,
+        };
+      });
+      expect(geom.top).toBeGreaterThanOrEqual(0);
+      expect(geom.bottom).toBeLessThanOrEqual(geom.vh);
+      // 焦点已在确认键上（回车即可完成）
+      await expect(page.locator("#fp-yes")).toBeFocused();
+
+      // 真点确认：桥发 pair.confirm（手机真实收到）+ paired 落盘新手机
+      await page.locator("#fp-yes").click();
+      await confirmP;
+      await expect
+        .poll(() => {
+          const cfg = JSON.parse(readFileSync(join(home, ".larkwire", "config.json"), "utf8")) as {
+            paired: Array<{ deviceId: string }>;
+          };
+          return cfg.paired.some((p) => p.deviceId === phone.deviceId);
+        }, { timeout: 10_000 })
+        .toBe(true);
+    } finally {
+      await app.close();
+    }
+  } finally {
+    phone.close();
+    if (relayProc.pid) {
+      relayProc.kill("SIGTERM");
+      setTimeout(() => {
+        if (relayProc.pid && !relayProc.killed) relayProc.kill("SIGKILL");
+      }, 5_000).unref();
+    }
+  }
+});
+
 test("S3 close-to-tray：关窗不退出、activate 重显", async () => {
   const app = await launchApp(makeSyntheticHome());
   try {
@@ -617,5 +890,168 @@ test("S3 close-to-tray：关窗不退出、activate 重显", async () => {
     await expect(page.locator("#view-main")).toBeVisible();
   } finally {
     await app.close();
+  }
+});
+
+test("S17 dev 改名克隆壳：OS 菜单栏加粗首项为灵鹊（AX 实测，非仅 JS 侧 label）", async () => {
+  // 每次唯一的克隆壳根目录+bundle id，避免与 Eric 正在运行的 dev 实例在 System Events 串进程
+  const { shellExe, plist, shellRoot, bundleId } = prepareE2eShell();
+  expect(
+    execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleName", plist], {
+      encoding: "utf8",
+    }).trim(),
+    "克隆壳 Info.plist CFBundleName",
+  ).toBe("灵鹊");
+
+  const home = mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-"));
+  const { ELECTRON_RUN_AS_NODE: _dropped, ...hostEnv } = process.env;
+  const app = await electron.launch({
+    executablePath: shellExe,
+    args: [".", "--larkwire-desktop", `--user-data-dir=${join(home, "userData")}`],
+    cwd: pkgDir,
+    env: {
+      ...hostEnv,
+      HOME: home,
+      LARKWIRE_AWAY_IDLE_SEC: "99999",
+      LARKWIRE_LAUNCHD_LABEL: "site.kowems.larkwire.bridge-e2e",
+    },
+  });
+  try {
+    await app.firstWindow();
+    // JS 内部名（About/Hide/Quit 等菜单子项据此生成）
+    expect(await app.evaluate(({ app: electronApp }) => electronApp.name)).toBe("灵鹊");
+    // #86 教训：JS Menu 模型的 label 与 OS 标题会脱节（setName 官方承诺不影响 OS 名）——
+    // 加粗首项必须问 System Events；进程 AX 注册有延迟，轮询 10s
+    let bold: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      bold = axBoldMenuTitle(bundleId);
+      if (bold === "灵鹊") break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(bold, "OS 菜单栏加粗首项（AX 实测）").toBe("灵鹊");
+  } finally {
+    await app.close();
+    removeE2eShell(shellRoot);
+  }
+});
+
+test("S18 dev 克隆壳关于面板：版本行为桌面版本而非 Electron 壳版本（OS 面板实测）", async () => {
+  const appVersion = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")).version;
+  // 每次唯一的克隆壳（同 id/同路径串进程是 S18 首跑读到 44.4.5 的根因）
+  const { shellExe, plist, shellRoot, bundleId } = prepareE2eShell();
+  // plist 回读：覆盖参数确实生效；两个版本字段都必须是桌面版本——「版本X (Y)」各管一段（B1/B2 对照实测）
+  expect(
+    execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist], {
+      encoding: "utf8",
+    }).trim(),
+    "克隆壳 Info.plist CFBundleIdentifier",
+  ).toBe(bundleId);
+  for (const key of ["CFBundleShortVersionString", "CFBundleVersion"]) {
+    expect(
+      execFileSync("/usr/libexec/PlistBuddy", ["-c", `Print :${key}`, plist], {
+        encoding: "utf8",
+      }).trim(),
+      `克隆壳 Info.plist ${key}`,
+    ).toBe(appVersion);
+  }
+
+  const home = mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-"));
+  const { ELECTRON_RUN_AS_NODE: _dropped, ...hostEnv } = process.env;
+  const app = await electron.launch({
+    executablePath: shellExe,
+    args: [".", "--larkwire-desktop", `--user-data-dir=${join(home, "userData")}`],
+    cwd: pkgDir,
+    env: {
+      ...hostEnv,
+      HOME: home,
+      LARKWIRE_AWAY_IDLE_SEC: "99999",
+      LARKWIRE_LAUNCHD_LABEL: "site.kowems.larkwire.bridge-e2e",
+    },
+  });
+  try {
+    await app.firstWindow();
+    // 与菜单角色同一个原生入口（orderFrontStandardAboutPanel），但从进程内触发：AX 菜单点击实测会
+    // 被 System Events 路由到旧壳（first-process 选择器串台）。先抢前台，面板才落在屏幕菜单栏下
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.focus({ steal: true });
+      electronApp.showAboutPanel();
+    });
+    // AX 读回：全量 repeat 按唯一 bundle id 定位本壳；面板出现有延迟，轮询 10s
+    let texts: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      texts = axAboutPanelTexts(bundleId);
+      if (texts && texts.includes(`版本${appVersion} (${appVersion})`)) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!texts) throw new Error("关于面板 10s 内未出现，或版本行不是「版本" + appVersion + " (" + appVersion + ")」");
+    expect(texts, "关于窗静态文本（AX 实测）").toContain("灵鹊");
+    expect(texts).toContain(`版本${appVersion} (${appVersion})`);
+  } finally {
+    await app.close();
+    removeE2eShell(shellRoot);
+  }
+});
+
+type ProbeReport = {
+  passed: boolean;
+  elapsedMs: number;
+  sizes: Record<
+    string,
+    { passed: boolean; anchors: number; anchorHits: number; anchorHitRatio: number }
+  >;
+};
+
+/** execFileSync 非零退出时实际抛出的形状（本仓 @types/node 的 ExecFileException 未声明 status/stdout） */
+type ExecError = { status?: number; stdout?: unknown };
+
+test("S19 dev 克隆壳 OS 级图标：NSWorkspace 读回为灵鹊品牌图，stock Electron 壳零品牌锚点", () => {
+  // 纯 OS read-back（不启动 app、不读 JS 侧值）：icon-probe 经 NSWorkspace→LaunchServices
+  // （与 Finder/Dock 同源）问系统认定的 .app 图标，再与期望品牌 icns 的高饱和彩色锚点比对。
+  // 阴阳必须同时实测：只证明「修复壳是品牌图」不算数，还得证明同探针在 stock Electron 上必挂。
+  // 颜色容差用 45（非缺省 35）：macOS 26 的 Liquid Glass 容器对内部内容做了轻微缩放/
+  // 色彩漂移（已渲染对比，内容右移约 1px、颜色略偏），tol35 时 32px 18/61=0.295 差一锚点；
+  // tol45 实测 32px 21/61=0.344、16px 12/14=0.857，而 stock Electron 阴阳壳仍为 0/0——
+  // 区分度没被放松。2026-10-05 标定。
+  const probe = join(pkgDir, "scripts", "icon-probe.swift");
+  const expectedIcon = join(pkgDir, "assets", "icon.icns");
+  const { shellRoot } = prepareE2eShell();
+  try {
+    const shellApp = join(shellRoot, "灵鹊.app");
+
+    // 阳性：修复后的唯一克隆壳，exit 0 且两尺寸锚点命中达标
+    const positive = JSON.parse(
+      execFileSync("swift", [probe, shellApp, expectedIcon, "--tolerance", "45"], {
+        cwd: pkgDir,
+        encoding: "utf8",
+        timeout: 30_000,
+      }),
+    ) as ProbeReport;
+    expect(positive.passed, "阳性壳探针 passed").toBe(true);
+    for (const size of ["32", "16"]) {
+      const r = positive.sizes[size]!;
+      expect(r.passed, `阳性壳 ${size}px passed`).toBe(true);
+      expect(r.anchorHits, `阳性壳 ${size}px 锚点命中数`).toBeGreaterThanOrEqual(3);
+      expect(r.anchorHitRatio, `阳性壳 ${size}px 锚点命中率`).toBeGreaterThanOrEqual(0.3);
+    }
+
+    // 阴性：stock Electron.app，必须 exit 1 且两尺寸零品牌锚点
+    const stockElectron = join(pkgDir, "node_modules", "electron", "dist", "Electron.app");
+    try {
+      execFileSync("swift", [probe, stockElectron, expectedIcon, "--tolerance", "45"], {
+        cwd: pkgDir,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      throw new Error("stock Electron 图标探针本应 exit 1，却意外通过——品牌锚点判定已失效");
+    } catch (error) {
+      // execFileSync 非零退出抛带 status/stdout 的错误；上面主动抛的 Error 无 status，必须透传
+      if ((error as ExecError).status !== 1) throw error;
+      const negative = JSON.parse(String((error as ExecError).stdout)) as ProbeReport;
+      expect(negative.passed, "阴性壳探针 passed").toBe(false);
+      expect(negative.sizes["32"]!.anchorHits, "阴性壳 32px 锚点命中").toBe(0);
+      expect(negative.sizes["16"]!.anchorHits, "阴性壳 16px 锚点命中").toBe(0);
+    }
+  } finally {
+    removeE2eShell(shellRoot);
   }
 });

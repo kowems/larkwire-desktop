@@ -1,13 +1,13 @@
 {
   "name": "@larkwire/desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "灵鹊 Larkwire 桌面壳（Electron）——双皮一份逻辑：桥核心 import 自 @larkwire/core 包，CLI 与桌面共用；系统守护（CPU 失控兜底）同在此壳",
   "license": "MIT",
   "type": "module",
   "main": "dist/main.mjs",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "node scripts/build.mjs && electron . --larkwire-desktop",
+    "dev": "node scripts/build.mjs && node scripts/dev-shell.mjs",
     "start": "electron . --larkwire-desktop",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:e2e": "playwright test",
@@ -22,9 +22,12 @@
     "@playwright/test": "^1.63.0",
     "@types/node": "^22.7.0",
     "@types/qrcode": "^1.5.5",
+    "@types/ws": "^8.18.2",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.20.2",
-    "typescript": "^5.6.0"
+    "tweetnacl": "^1.0.3",
+    "typescript": "^5.6.0",
+    "ws": "^8.22.0"
   }
 }

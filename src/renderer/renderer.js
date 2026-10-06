@@ -15,6 +15,8 @@ function main(api) {
     viewPair: $("view-pair"),
     viewMain: $("view-main"),
     // pair
+    pairSub: $("pair-sub"),
+    pairStage: $("pair-stage"),
     qr: $("qr"),
     qrWaiting: $("qr-waiting"),
     pairUrl: $("pair-url"),
@@ -416,24 +418,37 @@ function main(api) {
     els.pairUrl.textContent = pairUrl;
     els.bridgeFp.textContent = bridgeFp;
   };
+  const PAIR_SUB_INIT = "微信扫一扫二维码，把手机连到这台电脑";
   const handlePairFp = (ctx) => {
     els.fpBridge.textContent = ctx.bridgeFp;
     els.fpPhone.textContent = ctx.phoneFp;
     els.fpPhoneName.textContent = ctx.phoneName ? `（${ctx.phoneName}）` : "";
+    // 扫码即换舞台：二维码收起，窗口重心整页让给指纹核对——确认键必须在首屏内
+    show(els.pairStage, false);
+    els.pairSub.textContent = `✅ 手机${ctx.phoneName ? `「${ctx.phoneName}」` : ""}已扫码，请对照手机与电脑屏幕上的指纹`;
     show(els.fpPanel, true);
+    els.fpPanel.classList.add("fp-focus");
+    // 焦点直接落到主操作上（按钮已 unhide）：回车即可确认，不用找、不用滚
+    els.fpYes.focus();
   };
   const handlePairError = ({ message }) => {
     els.pairErrorMsg.textContent = message;
     show(els.pairError, true);
     show(els.fpPanel, false);
+    // 出错后可重试：二维码舞台恢复
+    show(els.pairStage, true);
+    els.pairSub.textContent = PAIR_SUB_INIT;
   };
   // 配对视图复位：主进程 startPairFlow 统一发（进视图/重试）——QR/指纹/错误全回初态
   const handlePairReset = () => {
     show(els.pairError, false);
+    show(els.pairStage, true);
+    els.pairSub.textContent = PAIR_SUB_INIT;
     els.qr.removeAttribute("src");
     show(els.qr, false);
     show(els.qrWaiting, true);
     els.fpPanel.classList.add("hidden");
+    els.fpPanel.classList.remove("fp-focus");
   };
   api.onPairUrl(handlePairUrl);
   api.onPairFp(handlePairFp);

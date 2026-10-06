@@ -43,6 +43,15 @@ h2 { font-size: 15px; margin: 0 0 10px; }
   padding: 14px 16px;
   margin: 14px 0;
 }
+/* 扫码后指纹面板成为窗口唯一舞台：蓝色描边把视线（与焦点）钉在这里 */
+#fp-panel.fp-focus {
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.18);
+  margin-top: 4px;
+}
+#fp-panel.fp-focus .btn.primary { padding: 10px 22px; font-size: 15px; }
+/* 焦点环常显（程序化 .focus() 默认不画 :focus-visible，而此时恰需可见） */
+#fp-yes:focus { outline: 2px solid #fff; outline-offset: 2px; }
 .panel.error { border-left: 3px solid var(--danger); }
 .panel.notice { border-left: 3px solid var(--accent); margin-top: 0; }
 .fp-table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; }

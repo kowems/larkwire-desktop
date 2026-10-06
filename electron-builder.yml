@@ -1,5 +1,8 @@
 # 灵鹊桌面打包配置（WP2 骨架 / WP4 公证在此追加）
-# icon 约定：buildResources(=assets)/icon.png 自动作为 app/dmg 图标（electron-builder 自动转 icns）
+# icon：显式指向预生成的 assets/icon.icns（2026-10-05 改）。此前靠 electron-builder 从
+# assets/icon.png 自动转 icns，其小尺寸 PNG 块带 eXIf，LaunchServices 在 16/32px 解出彩虹
+# 乱码（release 成品实测）；直接给 .icns 时 builder 原样使用不重新编码。
+# icon.icns 由 assets/icon.png 按 macOS 图标形状（Apple 连续圆角）预生成，勿手改。
 appId: site.kowems.larkwire.desktop
 productName: 灵鹊
 directories:
@@ -12,6 +15,7 @@ asar: true
 npmRebuild: false
 mac:
   category: public.app-category.utilities
+  icon: assets/icon.icns
   target:
     - dmg
   # 公证形态（2026-09-24 凌晨解开）：证书=钥匙串实证的 Developer ID Application（Eric 已在 Xcode 建好）。

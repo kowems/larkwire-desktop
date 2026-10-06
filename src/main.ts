@@ -572,6 +572,20 @@ ipcMain.handle("guard:set-enabled", (_e, on: unknown) => {
 
 // ---------- app 生命周期 ----------
 
+// dev 下跑的是 node_modules 里的 Electron 壳：菜单子项（About/Hide/Quit）按 app.name 生成，
+// 故须在 ready/默认菜单构建之前显式定名；而屏幕菜单栏的加粗首项 AppKit 只认 bundle 的 CFBundleName，
+// JS 侧改不动（官方 docs：does not affect the name that the OS uses），由 scripts/dev-shell.mjs
+// 的改名克隆壳解决——两处配合，开发态菜单栏整体显示「灵鹊」，与打包版（productName）一致
+app.setName("灵鹊");
+
+// 原生关于面板版本行「版本X (Y)」只从 bundle Info.plist 取值（dev 克隆壳已由 dev-shell.mjs 盖戳，
+// 打包版由 electron-builder 生成）；此处再以同名 API 预置一道：覆盖 `npm start` 跑未改名 stock
+// 壳等旁路场景。两字段缺一不可（B1/B2 对照实测）：applicationVersion 管 X，version 管 Y
+app.setAboutPanelOptions({
+  applicationVersion: app.getVersion(),
+  version: app.getVersion(),
+});
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
