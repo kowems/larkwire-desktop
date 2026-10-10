@@ -14,11 +14,11 @@
     "dist": "node scripts/build.mjs && electron-builder && touch release/.metadata_never_index"
   },
   "dependencies": {
-    "@larkwire/core": "^0.1.0",
+    "@larkwire/core": "^0.2.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@larkwire/protocol": "^0.1.0",
+    "@larkwire/protocol": "^0.2.0",
     "@playwright/test": "^1.63.0",
     "@types/node": "^22.7.0",
     "@types/qrcode": "^1.5.5",

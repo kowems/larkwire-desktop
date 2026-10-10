@@ -1,13 +1,15 @@
 /**
  * 桌面壳冒烟（项目首个自动化测试桩，WP2 计划钉死 2-3 条）：
- *   S1 隔离空 HOME → 首窗配对视图渲染（qr-waiting 或 qr 至少其一——不断言中继可达性）
+ *   S1 隔离空 HOME → 首窗配对视图渲染（默认本地中继在，qr 真出；waiting 选择器兜底）
  *   S2 合成 config HOME（新设备身份+假配对手机）→ 主窗渲染：状态条+空会话态，无 fatal
  *   S3 S2 形态 close-to-tray：关窗不退 app、窗口不销毁，activate 重显
  *   S4 launchd 接管（WP3）：合成 plist 存在 → bootout（未加载报错忽略）→ plist 退役删除
  *      → 无活 pid 秒过轮询 → 主窗照常无 fatal + 日志留接管完成行
  *
- * 纪律：HOME=mkdtemp 假家（绝不拿真 HOME 跑测试桥——S2 桥以全新 deviceId 连生产中继，
- * 无配对手机、零持久状态，等同任意新设备首连，无害）；LARKWIRE_AWAY_IDLE_SEC=99999 自噬隔离。
+ * 纪律：HOME=mkdtemp 假家（绝不拿真 HOME 跑测试桥）；全文件默认中继 = beforeAll 拉起的
+ * 测试内本地真实中继 sharedRelayUrl，空 HOME 用例经 LARKWIRE_RELAY_URL 环境变量指过去。
+ * 2026-10-07 前默认直指生产，每跑一条就用临时身份往生产库注册，累计积了 366 台噪声设备。
+ * LARKWIRE_AWAY_IDLE_SEC=99999 自噬隔离。
  */
 import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
 import { execSync, execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -16,6 +18,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { deviceIdFromKey, generateKeyPair, u8ToB64, b64ToU8, makeEnvelope, type Envelope } from "@larkwire/protocol";
 import { WebSocket } from "ws";
@@ -60,50 +64,31 @@ end tell`;
 }
 
 /**
- * 读关于窗（含「版本」开头静态文本的那个窗口）的全部静态文本，换行拼接返回。进程定位同
- * axBoldMenuTitle：全量 repeat 按唯一 bundle id 过滤（whose/first 选择器实测串到旧壳）。
- * 进程未找到或面板未出现均返回 null，交外层重试。
+ * window server 层（CGWindowList）读回指定进程的在屏窗口，不经 System Events/AX。
+ * 2026-10-08 实测本机 AX 平面全局退化：System Events 对所有进程（含 Cursor/Finder）
+ * windows 计数恒为 0，且 UI elements 出现自指「application」镜像，原生关于面板的
+ * 版本文本无法再走 AX 读回；CGW 仍如实见到面板（无标题、约 278×168 的新窗口）。
  */
-function axAboutPanelTexts(bundleId: string): string | null {
-  const script = `
-tell application "System Events"
-  set found to missing value
-  repeat with p in every application process
-    try
-      if bundle identifier of p contains "${bundleId}" then
-        set found to p
-        exit repeat
-      end if
-    end try
-  end repeat
-  if found is missing value then return "NO_PROC"
-  set picked to missing value
-  repeat with w in windows of found
-    set vals to value of every static text of w
-    repeat with v in vals
-      if v starts with "版本" and v contains "(" then
-        set picked to vals
-        exit repeat
-      end if
-    end repeat
-    if picked is not missing value then exit repeat
-  end repeat
-  if picked is missing value then return "NO_ABOUT_WINDOW"
-  set oldDelims to AppleScript's text item delimiters
-  set AppleScript's text item delimiters to linefeed
-  set joined to picked as string
-  set AppleScript's text item delimiters to oldDelims
-  return joined
-end tell`;
-  try {
-    const out = execFileSync("osascript", ["-e", script], {
-      encoding: "utf8",
-      timeout: 20000,
-    }).trim();
-    return out === "NO_PROC" || out === "NO_ABOUT_WINDOW" ? null : out;
-  } catch {
-    return null;
+type CgwWin = { pid: number; layer: number; width: number; height: number; name: string };
+
+function cgwWindows(pids: number[]): CgwWin[] {
+  const out = execFileSync("swift", [join(pkgDir, "e2e", "cgw-windows.swift"), ...pids.map(String)], {
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  const wins: CgwWin[] = [];
+  for (const line of out.split("\n")) {
+    if (!line.startsWith("CGW|")) continue;
+    const [, pid, layer, width, height, ...rest] = line.split("|");
+    wins.push({
+      pid: Number(pid),
+      layer: Number(layer),
+      width: Number(width),
+      height: Number(height),
+      name: rest.join("|"),
+    });
   }
+  return wins;
 }
 
 /**
@@ -186,8 +171,9 @@ function utcWallClock(d: Date): string {
 }
 
 /** 造一个从未见过的新桥身份 + 一台假手机配对条目（返回身份，供本地中继落 active 配对）。
- *  relayUrl 缺省走生产；指向本地真实中继时必须经 seedActivePairing 把配对落进中继库，
- *  否则鉴权后 pair.status（#83）会把中继不认识的假手机秒清，行级测试无从下手 */
+ *  relayUrl 缺省走全文件共享本地中继 sharedRelayUrl（beforeAll 已拉起）；需要中继承认
+ *  假手机的行级测试必须经 seedActivePairing 把配对落进【对应】中继库，否则鉴权后
+ *  pair.status（#83）会把中继不认识的假手机秒清，行级测试无从下手 */
 function makeSyntheticHomeEx(relayUrl?: string): {
   home: string;
   bridgeDeviceId: string;
@@ -208,7 +194,7 @@ function makeSyntheticHomeEx(relayUrl?: string): {
       publicKey: pub,
       secretKey: u8ToB64(kp.secretKey),
       name: "desktop-smoke",
-      relay: relayUrl ?? "wss://larkwire.kowems.site/ws",
+      relay: relayUrl ?? sharedRelayUrl,
       pairPageBase: "https://larkwire.kowems.site/pair",
       paired: [
         { deviceId: phoneDeviceId, publicKey: phonePub, name: "冒烟假手机", pairedAt: Date.now() },
@@ -237,16 +223,21 @@ function seedActivePairing(dbPath: string, bridgeId: string, phoneId: string): v
 }
 
 /** S14：起一个测试内本地真实中继（随机端口 + HOME 内 db），等 listening 后返回进程与 ws 地址。
- *  扁平镜像里跑的是 vendored 的 esbuild 单文件 bundle（e2e/fixtures/relay.bundle.mjs，node 直跑，免 tsx） */
-function spawnLocalRelay(home: string): { relayProc: ChildProcess; relayUrl: string } {
+ *  extraEnv 供 S20 注入 dummy GETUI_* 与 GETUI_BASE_URL（默认值不变，绝不透到生产形态） */
+function spawnLocalRelay(
+  home: string,
+  extraEnv: Record<string, string> = {},
+): { relayProc: ChildProcess; relayUrl: string } {
   const port = 10_000 + Math.floor(Math.random() * 50_000);
-  const relayEntry = join(pkgDir, "e2e", "fixtures", "relay.bundle.mjs");
-  const relayProc = spawn(process.execPath, [relayEntry], {
+  const tsxBin = join(pkgDir, "..", "..", "node_modules", ".bin", "tsx");
+  const relayEntry = join(pkgDir, "..", "relay", "src", "index.ts");
+  const relayProc = spawn(tsxBin, [relayEntry], {
     env: {
       ...process.env,
       LARKWIRE_RELAY_HOST: "127.0.0.1",
       LARKWIRE_RELAY_PORT: String(port),
       LARKWIRE_RELAY_DB: join(home, "relay.db"),
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -357,12 +348,46 @@ async function waitRelayReady(relayProc: ChildProcess): Promise<void> {
   });
 }
 
-test("S1 空 HOME → 首窗配对视图渲染", async () => {
-  const app = await launchApp(mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-")));
+/**
+ * 全文件共享本地中继（beforeAll 拉起 / afterAll 拆除）：对中继行为「无所谓」的用例一律连它，
+ * 绝不以临时身份注册生产——2026-10-07 前默认直指生产，生产库积了 366 台从未配对的噪声设备。
+ * 需要行级控制配对的用例（S9/S12/S13/S14/S15/S16）仍各自 spawn 独立中继，互不干扰。
+ */
+let sharedRelayHome = "";
+let sharedRelayProc: ChildProcess | null = null;
+let sharedRelayUrl = "";
+
+test.beforeAll(async () => {
+  test.setTimeout(30_000);
+  sharedRelayHome = mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-sharedrelay-"));
+  const r = spawnLocalRelay(sharedRelayHome);
+  sharedRelayProc = r.relayProc;
+  sharedRelayUrl = r.relayUrl;
+  await waitRelayReady(sharedRelayProc);
+});
+
+test.afterAll(() => {
+  if (sharedRelayProc?.pid) {
+    sharedRelayProc.kill("SIGTERM");
+    setTimeout(() => {
+      if (sharedRelayProc?.pid && !sharedRelayProc.killed) sharedRelayProc.kill("SIGKILL");
+    }, 5_000).unref();
+  }
   try {
-    const page = await app.firstWindow();
+    rmSync(sharedRelayHome, { recursive: true, force: true });
+  } catch {
+    /* /tmp 系统自清 */
+  }
+});
+
+test("S1 空 HOME → 首窗配对视图渲染", async () => {
+  const app = await launchApp(mkdtempSync(join(tmpdir(), "larkwire-desktop-e2e-")), {
+    LARKWIRE_RELAY_URL: sharedRelayUrl, // 空 HOME 配对流程走共享本地中继，不注册生产
+  });
+  try {
     // 应用名必须是「灵鹊」：dev 直接跑 Electron 壳时默认菜单首项显示 Electron（#86）
     expect(await app.evaluate(({ app: electronApp }) => electronApp.name)).toBe("灵鹊");
+    const page = await app.firstWindow();
     await expect(page.locator("#preload-fail")).toBeHidden();
     await expect(page.locator("#view-pair")).toBeVisible();
     // 中继通→qr 图；不通→waiting 文案；两者其一必须可见（不断言网络）
@@ -912,6 +937,7 @@ test("S17 dev 改名克隆壳：OS 菜单栏加粗首项为灵鹊（AX 实测，
     env: {
       ...hostEnv,
       HOME: home,
+      LARKWIRE_RELAY_URL: sharedRelayUrl, // 空 HOME 配对流程走共享本地中继，不注册生产
       LARKWIRE_AWAY_IDLE_SEC: "99999",
       LARKWIRE_LAUNCHD_LABEL: "site.kowems.larkwire.bridge-e2e",
     },
@@ -964,28 +990,62 @@ test("S18 dev 克隆壳关于面板：版本行为桌面版本而非 Electron �
     env: {
       ...hostEnv,
       HOME: home,
+      LARKWIRE_RELAY_URL: sharedRelayUrl, // 空 HOME 配对流程走共享本地中继，不注册生产
       LARKWIRE_AWAY_IDLE_SEC: "99999",
       LARKWIRE_LAUNCHD_LABEL: "site.kowems.larkwire.bridge-e2e",
     },
   });
   try {
     await app.firstWindow();
-    // 与菜单角色同一个原生入口（orderFrontStandardAboutPanel），但从进程内触发：AX 菜单点击实测会
-    // 被 System Events 路由到旧壳（first-process 选择器串台）。先抢前台，面板才落在屏幕菜单栏下
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.focus({ steal: true });
-      electronApp.showAboutPanel();
-    });
-    // AX 读回：全量 repeat 按唯一 bundle id 定位本壳；面板出现有延迟，轮询 10s
-    let texts: string | null = null;
-    for (let i = 0; i < 20; i++) {
-      texts = axAboutPanelTexts(bundleId);
-      if (texts && texts.includes(`版本${appVersion} (${appVersion})`)) break;
-      await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 1500)); // 等主窗上屏，建立 CGW 基线
+    const rootPid = app.process().pid;
+    if (!rootPid) throw new Error("Electron 根进程无 pid，无法做 window server 层读回");
+    const baseline = cgwWindows([rootPid]);
+    // 原生入口 orderFrontStandardAboutPanel，从进程内触发：AX 菜单点击实测会被
+    // System Events 路由到旧壳（first-process 选择器串台）。先抢前台，面板才落在屏幕菜单栏下
+    const triggerAbout = () =>
+      app.evaluate(({ app: electronApp }) => {
+        electronApp.focus({ steal: true });
+        electronApp.showAboutPanel();
+      });
+    await triggerAbout();
+    // CGW 读回：面板在 window server 层表现为「本进程一个新的无标题小窗」
+    // （2026-10-08 实测 278×168，给足版本差异容差）。按墙上时钟轮询 20s，
+    // 记录最后一次窗口现场供失败归因
+    let panel: CgwWin | null = null;
+    let lastDiag = "(未执行任何探测)";
+    const isPanel = (w: CgwWin) =>
+      w.layer === 0 &&
+      w.width >= 200 &&
+      w.width <= 500 &&
+      w.height >= 100 &&
+      w.height <= 400 &&
+      w.name === "" &&
+      !baseline.some((b) => b.width === w.width && b.height === w.height && b.name === w.name);
+    const deadline = Date.now() + 20_000;
+    let retriggerAt = Date.now() + 8_000; // 8s 仍未见：再抢前台重发一次（防首次调用落在激活竞态）
+    for (;;) {
+      const wins = cgwWindows([rootPid]);
+      const found = wins.find(isPanel);
+      if (found) {
+        panel = found;
+        break;
+      }
+      lastDiag = wins.map((w) => `${w.width}x${w.height} layer=${w.layer} name=${JSON.stringify(w.name)}`).join("; ");
+      if (Date.now() >= deadline) break;
+      if (Date.now() >= retriggerAt) {
+        void triggerAbout();
+        retriggerAt = Infinity;
+      }
+      await new Promise((r) => setTimeout(r, 700));
     }
-    if (!texts) throw new Error("关于面板 10s 内未出现，或版本行不是「版本" + appVersion + " (" + appVersion + ")」");
-    expect(texts, "关于窗静态文本（AX 实测）").toContain("灵鹊");
-    expect(texts).toContain(`版本${appVersion} (${appVersion})`);
+    if (!panel) {
+      throw new Error(`关于面板 20s 内未在 window server 层出现。最后窗口现场：${lastDiag}`);
+    }
+    // app.getVersion() 同口径：返回桌面 package.json 版本（打包版读 CFBundleShortVersionString）
+    expect(await app.evaluate(({ app: electronApp }) => electronApp.getVersion()), "app.getVersion()").toBe(
+      appVersion,
+    );
   } finally {
     await app.close();
     removeE2eShell(shellRoot);
@@ -1053,5 +1113,127 @@ test("S19 dev 克隆壳 OS 级图标：NSWorkspace 读回为灵鹊品牌图，st
     }
   } finally {
     removeE2eShell(shellRoot);
+  }
+});
+
+test("S20 看模式回合完成推送：专用中继+dummy 个推指本地 sink，实收 ✅ wp5 · 会话回合完成", async () => {
+  test.setTimeout(60_000);
+
+  // ① 模拟个推网关（真实 http 收包，全程不连真实个推/生产）：/:appid/auth 与 /:appid/push/single/cid
+  const pushes: Record<string, unknown>[] = [];
+  const sink = await new Promise<Server>((resolve, reject) => {
+    const srv = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        const reqUrl = req.url ?? "";
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(raw || "{}") as Record<string, unknown>;
+        } catch {
+          payload = {};
+        }
+        if (reqUrl.endsWith("/auth")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            code: 0,
+            data: { token: "fake-auth-token", expire_time: String(Date.now() + 3600_000) },
+          }));
+          return;
+        }
+        pushes.push(payload);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 0 }));
+      });
+    });
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", () => resolve(srv));
+  });
+  const sinkPort = (sink.address() as AddressInfo).port;
+
+  // ② 专用本地中继：dummy 三键 + GETUI_BASE_URL 指本 sink（⚠️ GETUI_BASE_URL 生产勿设，仅测试注入）
+  const relayHome = mkdtempSync(join(tmpdir(), "larkwire-s20-relay-"));
+  const { relayProc, relayUrl } = spawnLocalRelay(relayHome, {
+    GETUI_APP_ID: "dummy-app-id",
+    GETUI_APP_KEY: "dummy-app-key",
+    GETUI_MASTER_SECRET: "dummy-master-secret",
+    GETUI_BASE_URL: `http://127.0.0.1:${sinkPort}`,
+  });
+  let app: ElectronApplication | undefined;
+  try {
+    await waitRelayReady(relayProc);
+
+    // ③ 新桥身份+假手机（配置中继指专用中继），落 active 配对与假个推 token
+    const { home, bridgeDeviceId, phoneDeviceId } = makeSyntheticHomeEx(relayUrl);
+    const dbPath = join(relayHome, "relay.db");
+    seedActivePairing(dbPath, bridgeDeviceId, phoneDeviceId);
+    const relayDb = new DatabaseSync(dbPath);
+    try {
+      relayDb
+        .prepare(
+          `INSERT INTO push_tokens (device_id, token, platform, updated_at) VALUES (?, ?, 'ios', ?)`,
+        )
+        .run(phoneDeviceId, "cid-s20-fake", Date.now());
+    } finally {
+      relayDb.close();
+    }
+
+    // ④ 先写 user 行再启动 app——新文件无 saved state，watcher 首见 offset=当前 EOF
+    writeSyntheticTranscript(home);
+    app = await launchApp(home, {
+      LARKWIRE_DONE_DEBOUNCE_SEC: "1",
+      LARKWIRE_AWAY_IDLE_SEC: "0",
+    });
+
+    // ⑤ 等 watcher 发现文件（poll 500ms，留足两个轮询周期），再【追加】assistant end_turn 行：
+    //    先于发现写入会被 offset 跳过，turnEnd 永远不触发
+    await new Promise((r) => setTimeout(r, 1500));
+    const transcriptPath = join(
+      home, ".claude", "projects", "-Users-test-wp5", `${WP5_SID}.jsonl`,
+    );
+    const assistantLine = JSON.stringify({
+      type: "assistant",
+      timestamp: new Date().toISOString(),
+      cwd: "/Users/test/wp5",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "合成测试回合结束（S20 冒烟，非真实会话）" }],
+      },
+    });
+    writeFileSync(transcriptPath, assistantLine + "\n", { flag: "a" });
+
+    // ⑥ 轮询 sink ≤20s，断言全链路实收文案（android notification + ios aps 双口径）
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && pushes.length === 0) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(pushes.length, "sink 应实收 1 条个推 push").toBeGreaterThanOrEqual(1);
+    const req0 = pushes[0]!;
+    const androidBody = (
+      req0.push_message as { notification?: { body?: string } }
+    ).notification?.body;
+    const iosBody = (
+      req0.push_channel as { ios?: { aps?: { alert?: { body?: string } } } }
+    ).ios?.aps?.alert?.body;
+    expect(androidBody).toBe("✅ wp5 · 会话回合完成");
+    expect(iosBody).toBe("✅ wp5 · 会话回合完成");
+
+    // 点击直达：payload 仍为 JSON{sessionId}（WP5_SID，session id 由文件名归一）
+    const notif = (req0.push_message as { notification: Record<string, unknown> }).notification;
+    expect(notif.click_type).toBe("payload");
+    expect(notif.payload).toBe(JSON.stringify({ sessionId: WP5_SID }));
+  } finally {
+    if (app) await app.close().catch(() => {});
+    relayProc.kill("SIGTERM");
+    setTimeout(() => {
+      if (relayProc.pid && !relayProc.killed) relayProc.kill("SIGKILL");
+    }, 5_000).unref();
+    await new Promise<void>((resolve) => sink.close(() => resolve()));
+    try {
+      rmSync(relayHome, { recursive: true, force: true });
+    } catch {
+      /* /tmp 系统自清 */
+    }
   }
 });
