@@ -3,10 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 灵鹊 Larkwire 是「用手机远程照看、操控电脑端 AI Agent」的工具。本仓是 **macOS 桌面端**：
-一个常驻菜单栏的 Electron 壳——扫码配对后，把本机桥（[`@larkwire/core`](https://www.npmjs.com/package/@larkwire/core) 包，
-CLI 命令名仍为 `larkwire`，与桌面共用同一份核心）托管起来，配对状态、桥存活、开机自启、权限引导都在这层。
+一个常驻菜单栏的桌面应用——扫码配对后，本机桥（[`@larkwire/core`](https://www.npmjs.com/package/@larkwire/core) 包，
+CLI 命令名仍为 `larkwire`，与桌面共用同一份核心）随应用进程拉起；配对状态、桥存活、开机自启、权限引导都在这层。
+电脑端远程功能随应用生灭：打开应用即开启、退出应用即关闭（关窗只是藏到菜单栏，远程不断）。
 
-v0.1.1 起**系统守护**也在此壳：看护 Cursor 扩展宿主，CPU 连续满载约 5 分钟即自动结束进程并通知（SIGTERM，绝不强杀），
+v0.1.1 起**系统守护**也在这个应用里：看护 Cursor 扩展宿主，CPU 连续满载约 5 分钟即自动结束进程并通知（SIGTERM，绝不强杀），
 主窗「系统守护」面板可扳开关、查看可疑进程与近期处置。
 
 > 手机端 App（iOS / Android）闭源，不在本仓。下载：iOS（TestFlight 审核中）/ Android（应用市场即将上架），见 <https://larkwire.kowems.site#download>。
@@ -104,7 +105,7 @@ APPLE_KEYCHAIN_PROFILE=larkwire-notarize npm run dist
 
 ## 隐私与安全模型
 
-- 桌面端只是**壳**：所有会话内容经桥与手机端 E2E 加密（tweetnacl box），中继只见信封头
+- 桌面端不保存会话内容：所有会话内容经桥与手机端 E2E 加密（tweetnacl box），中继只见信封头
   （类型/收发方/字节数）和密文 body；
 - 设备私钥存于本机用户目录，权限随用户；
 - 桌面端不收集、不上报任何分析数据。
